@@ -5,7 +5,16 @@
 #include <stdlib.h>
 #include <cstring>
 
+#include <assert.h>
+#include <stdio.h>
+
+#include "mpi.h"
+
 int bpp, width, height, pitch;
+int NPROC = -1;  // TODO: this isn't being used anywhere.
+int PROCID = -1;
+int WEAK = 0;
+int STRONG = 255;
 
 // https://github.com/anlcnydn/bilateral/blob/master/bilateral_filter.cpp
 float distance(int x, int y, int i, int j) {
@@ -113,9 +122,6 @@ void applyNonMaxSuppression(BYTE *src, BYTE *dst, float *direction, int imageWid
     }
 }
 
-int WEAK = 0;
-int STRONG = 255;
-
 void applyThreshold(BYTE *image, int imageWidth, int imageHeight) {
     float lowThresholdRatio = 0.05f;
     float highThresholdRatio = 0.09f;
@@ -169,24 +175,18 @@ void saveImage(const char *filepath, BYTE *dst, const char *stageName){
     outpath = std::string(filepath); 
     outpath.insert(outpath.length() - 4, stageName);
     FreeImage_Save(FIF_PNG, image, outpath.c_str());
+    std::cout << outpath << " complete" << std::endl;
 }
 
-int main(int argc, char* argv[]) {
-    const char* filepath = "";
+void start(int procID, int nproc, const char *filepath){
 
-    if(argc < 3){
-        std::cout << "Usage: ./main -f <image file>" << std::endl;
-        exit(-1);
-    }
-    if(strcmp(argv[1], "-f") == 0){
-        filepath = argv[2];
-    }
-    else{
-        std::cout << "Usage: ./main -f <image file>" << std::endl;
-        exit(-1);
-    }
-    //"images/valve.png"
+    PROCID = procID;
+    NPROC = nproc;
+    // const int root = 0;  // Set the rank 0 process as the root process
 
+    // assign tasks
+    
+    
     FIBITMAP *image = FreeImage_Load(FIF_PNG, filepath);
 
     image = FreeImage_ConvertToGreyscale(image);
@@ -228,5 +228,46 @@ int main(int argc, char* argv[]) {
 
     // applyHysteresis(dst, width,height);
     // saveImage(filepath, dst, "-5-hyster");
+}
+
+int main(int argc, char* argv[]) {
+    int procID;
+    int nproc;
+    double startTime;
+    double endTime;
+
+    // Initialize MPI
+    MPI_Init(&argc, &argv);
+
+    // Get process rank
+    MPI_Comm_rank(MPI_COMM_WORLD, &procID);
+
+    // Get total number of processes specificed at start of run
+    MPI_Comm_size(MPI_COMM_WORLD, &nproc);
+
+
+    const char* filepath = "";
+
+    if(argc < 3){
+        std::cout << "Usage: ./main -f <image file>" << std::endl;
+        exit(-1);
+    }
+    if(strcmp(argv[1], "-f") == 0){
+        filepath = argv[2];
+    }
+    else{
+        std::cout << "Usage: ./main -f <image file>" << std::endl;
+        exit(-1);
+    }
+    //"images/valve.png"
+
+    // Run computation
+    startTime = MPI_Wtime();
+    start(procID, nproc, filepath);
+    endTime = MPI_Wtime();
+
+    // Compute running time
+    MPI_Finalize();
+    printf("elapsed time for proc %d: %f\n", procID, endTime - startTime);
     return 0;
 }
