@@ -1,0 +1,9 @@
+{
+  "configurations": [
+    {
+      "name": "Mac",
+      "includePath": ["${myDefaultIncludePath}", "/usr/include/openmpi-x86_64", "${workspaceRoot}/../FreeImage/Dist"]
+    }
+  ],
+  "version": 4
+}
