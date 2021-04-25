@@ -249,15 +249,15 @@ int main(int argc, char* argv[]) {
     const char* filepath = "";
 
     if(argc < 3){
-        std::cout << "Usage: ./main -f <image file>" << std::endl;
-        exit(-1);
+        std::cout << "Usage: mpirun -n <# of cores> ./main -f <image file>" << std::endl;
+        return -1;
     }
     if(strcmp(argv[1], "-f") == 0){
         filepath = argv[2];
     }
     else{
-        std::cout << "Usage: ./main -f <image file>" << std::endl;
-        exit(-1);
+        std::cout << "Usage: mpirun -n <# of cores> ./main -f <image file>" << std::endl;
+        return -1;
     }
     //"images/valve.png"
 
