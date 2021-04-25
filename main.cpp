@@ -375,6 +375,16 @@ void saveImage(const char *filepath, BYTE *dst, const char *stageName){
     saveImage(filepath, image, stageName);
 }
 
+void aggregateOutputAndSaveImage(const char *filepath, BYTE *dst, const char *stageName) {
+    if (PROCID != 0) {
+        copyBlockToBuffer(dst);
+        sendBlock(0, TAG_OUTPUT_FINAL);
+    } else {
+        recvBlocks(dst, NPROC - 1, TAG_OUTPUT_FINAL);
+        saveImage(filepath, dst, stageName);
+    }
+}
+
 void start(int argc, char* argv[]){
     const char* filepath = "";
 
@@ -464,13 +474,7 @@ void start(int argc, char* argv[]){
     }
     recvBlocks(dst, PARTITION.neighborCount, TAG_OUTPUT_STEP1);
 
-    // if (PROCID != 0) {
-    //     copyBlockToBuffer(dst);
-    //     sendBlock(0, TAG_OUTPUT_FINAL);
-    // } else {
-    //     recvBlocks(dst, NPROC - 1, TAG_OUTPUT_FINAL);
-    //     saveImage(filepath, dst, "-1-bilateral");
-    // }
+    // aggregateOutputAndSaveImage(filepath, dst, "-1-bilateral");
 
     src = dst;
     dst = new BYTE[PITCH * HEIGHT]();
@@ -490,36 +494,18 @@ void start(int argc, char* argv[]){
     recvBlocks(dst, PARTITION.neighborCount, TAG_OUTPUT_STEP2);
     recvBlocksFloat(direction, PARTITION.neighborCount, TAG_OUTPUT_STEP2_DIRECTION);
 
-    // if (PROCID != 0) {
-    //     copyBlockToBuffer(dst);
-    //     sendBlock(0, TAG_OUTPUT_FINAL);
-    // } else {
-    //     recvBlocks(dst, NPROC - 1, TAG_OUTPUT_FINAL);
-    //     saveImage(filepath, dst, "-2-sobel");
-    // }
+    // aggregateOutputAndSaveImage(filepath, dst, "-2-sobel");
 
     src = dst;
     dst = new BYTE[PITCH * HEIGHT]();
 
     applyNonMaxSuppression(src, dst, direction);
 
-    // if (PROCID != 0) {
-    //     copyBlockToBuffer(dst);
-    //     sendBlock(0, TAG_OUTPUT_FINAL);
-    // } else {
-    //     recvBlocks(dst, NPROC - 1, TAG_OUTPUT_FINAL);
-    //     saveImage(filepath, dst, "-3-nonmax");
-    // }
+    // aggregateOutputAndSaveImage(filepath, dst, "-3-nonmax");
 
     applyThreshold(dst);
 
-    // if (PROCID != 0) {
-    //     copyBlockToBuffer(dst);
-    //     sendBlock(0, TAG_OUTPUT_FINAL);
-    // } else {
-    //     recvBlocks(dst, NPROC - 1, TAG_OUTPUT_FINAL);
-    //     saveImage(filepath, dst, "-4-thres");
-    // }
+    // aggregateOutputAndSaveImage(filepath, dst, "-4-thres");
 
     copyBlockToBuffer(dst);
     for (int i = 0; i < 9; i++) {
@@ -532,13 +518,7 @@ void start(int argc, char* argv[]){
 
     applyHysteresis(dst);
 
-    if (PROCID != 0) {
-        copyBlockToBuffer(dst);
-        sendBlock(0, TAG_OUTPUT_FINAL);
-    } else {
-        recvBlocks(dst, NPROC - 1, TAG_OUTPUT_FINAL);
-        saveImage(filepath, dst, "-5-hyster");
-    }
+    aggregateOutputAndSaveImage(filepath, dst, "-5-hyster");
 }
 
 int main(int argc, char* argv[]) {
