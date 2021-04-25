@@ -241,7 +241,7 @@ void start(int procID, int nproc, int argc, char* argv[]){
 
     FreeImage_ConvertToRawBits(src, IMAGE, pitch, bpp, 0, 0, 0);
 
-    applyBilateralFilter(src, dst, width, height, pitch, 5, 30.f, 20.f);
+    applyBilateralFilter(src, dst, width, height, pitch, 9, 30.f, 20.f);
     saveImage(filepath, dst, "-1-bilateral");
 
     src = dst;
