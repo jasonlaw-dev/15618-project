@@ -24,11 +24,10 @@
     } while (0);
 
 int bpp, width, height, pitch;
-int NPROC = -1;  // TODO: this isn't being used anywhere.
+int NPROC = -1;
 int PROCID = -1;
 int WEAK = 0;
 int STRONG = 255;
-FIBITMAP *IMAGE;
 
 // https://github.com/anlcnydn/bilateral/blob/master/bilateral_filter.cpp
 float distance(int x, int y, int i, int j) {
@@ -197,7 +196,7 @@ void saveImage(const char *filepath, FIBITMAP *image, const char *stageName){
 }
 
 void saveImage(const char *filepath, BYTE *dst, const char *stageName){
-    FIBITMAP *image = FreeImage_ConvertFromRawBits(dst, width, height, pitch, bpp, 0, 0, 0);
+    FIBITMAP *image = FreeImage_ConvertFromRawBits(dst, width, height, pitch, bpp, 0, 0, 0, true);
     saveImage(filepath, image, stageName);
 }
 
@@ -222,24 +221,24 @@ void start(int procID, int nproc, int argc, char* argv[]){
         exit(-1);
     }
 
-    IMAGE = FreeImage_Load(FIF_PNG, filepath);
-    if(IMAGE == NULL){
+    FIBITMAP *image = FreeImage_Load(FIF_PNG, filepath);
+    if(image == NULL){
         error_exit("image file not found \"%s\"\n", filepath);
     }
-    IMAGE = FreeImage_ConvertToGreyscale(IMAGE);
-    IMAGE = FreeImage_ConvertTo8Bits(IMAGE);
+    image = FreeImage_ConvertToGreyscale(image);
+    image = FreeImage_ConvertTo8Bits(image);
 
-    bpp = FreeImage_GetBPP(IMAGE);
-    width = FreeImage_GetWidth(IMAGE);
-    height = FreeImage_GetHeight(IMAGE);
-    pitch = FreeImage_GetPitch(IMAGE);
+    bpp = FreeImage_GetBPP(image);
+    width = FreeImage_GetWidth(image);
+    height = FreeImage_GetHeight(image);
+    pitch = FreeImage_GetPitch(image);
 
-    printImageInfo(IMAGE);
+    printImageInfo(image);
 
     BYTE *src = new BYTE[pitch * height];
     BYTE *dst = new BYTE[pitch * height]();
 
-    FreeImage_ConvertToRawBits(src, IMAGE, pitch, bpp, 0, 0, 0);
+    FreeImage_ConvertToRawBits(src, image, pitch, bpp, 0, 0, 0, true);
 
     applyBilateralFilter(src, dst, width, height, pitch, 9, 30.f, 20.f);
     saveImage(filepath, dst, "-1-bilateral");
