@@ -40,10 +40,8 @@ float gaussian(float x, double sigma) {
 }
 
 void applyBilateralFilter(BYTE *src, BYTE *dst, int imageWidth, int imageHeight, int imagePitch, int diameter, float sigmaI, float sigmaS) {
-    int half = diameter / 2;
-
-    for (int i = half; i < imageHeight - half; i++) {
-        for (int j = half; j < imageWidth - half; j++) {
+    for (int i = 0; i < imageHeight; i++) {
+        for (int j = 0; j < imageWidth; j++) {
             float iFiltered = 0;
             float wP = 0;
             int neighbor_i = 0;
@@ -54,6 +52,17 @@ void applyBilateralFilter(BYTE *src, BYTE *dst, int imageWidth, int imageHeight,
                 for (int jj = 0; jj < diameter; jj++) {
                     neighbor_i = i - (half - ii);
                     neighbor_j = j - (half - jj);
+                    if (neighbor_i < 0) {
+                        neighbor_i += diameter + 1;
+                    } else if (neighbor_i >= imageHeight) {
+                        neighbor_i -= diameter + 1;
+                    }
+                    if (neighbor_j < 0) {
+                        neighbor_j += diameter + 1;
+                    } else if (neighbor_j >= imageWidth) {
+                        neighbor_j -= diameter + 1;
+                    }
+
                     float gi = gaussian(src[neighbor_i * imagePitch + neighbor_j] - src[i * imagePitch + j], sigmaI);
                     float gs = gaussian(distance(i, j, neighbor_i, neighbor_j), sigmaS);
                     float w = gi * gs;
