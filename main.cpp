@@ -4,7 +4,7 @@
 #include <iostream>
 #include <stdlib.h>
 #include <cstring>
-
+#include <locale>
 #include <assert.h>
 #include <stdio.h>
 
@@ -28,11 +28,19 @@ int BLOCK_ROWS, BLOCK_COLS;
 int BLOCK_HEIGHT, BLOCK_WIDTH;
 int NPROC = -1;
 int PROCID = -1;
-int WEAK = 0;
+int WEAK = 25;
 int STRONG = 255;
 BYTE *OUTPUT_BUFFER = NULL;
+BYTE *INPUT_BUFFER = NULL;
+float *OUTPUT_BUFFER_FLOAT = NULL;
+float *INPUT_BUFFER_FLOAT = NULL;
+FREE_IMAGE_FORMAT IMAGE_FORMAT = FIF_UNKNOWN;
 
-int TAG_OUTPUT = 1001;
+int TAG_OUTPUT_STEP1 = 1001;
+int TAG_OUTPUT_STEP2 = 1002;
+int TAG_OUTPUT_STEP2_DIRECTION = 2002;
+int TAG_OUTPUT_STEP4 = 1004;
+int TAG_OUTPUT_FINAL = 1005;
 
 struct PartitionInfo {
     // pixel index
@@ -41,7 +49,7 @@ struct PartitionInfo {
     int leftPixel;
     int rightPixel;
 
-    int neigbhors[8];
+    int neigbhors[9];
     int neighborCount;
 };
 
@@ -98,7 +106,6 @@ PartitionInfo *getPartition(int procId) {
         1       -1      -1
         4       5       -1
     */
-
     partition->neighborCount = 0;
     for (int i = 0; i < 3; i++) {
         for (int j = 0; j < 3; j++) {
@@ -131,22 +138,48 @@ PartitionInfo *getPartition(int procId) {
     return partition;
 }
 
-void sendOutputBlock(BYTE *image) {
+void sendBlock(int dest, int tag) {
+    MPI_Request *request = new MPI_Request;
+    MPI_Isend(OUTPUT_BUFFER, BLOCK_WIDTH * BLOCK_HEIGHT, MPI_BYTE, dest, tag, MPI_COMM_WORLD, request);
+}
+
+void sendBlockFloat(int dest, int tag) {
+    MPI_Request *request = new MPI_Request;
+    MPI_Isend(OUTPUT_BUFFER_FLOAT, BLOCK_WIDTH * BLOCK_HEIGHT, MPI_FLOAT, dest, tag, MPI_COMM_WORLD, request);
+}
+
+void copyBlockToBuffer(BYTE *image) {
     for (int i = PARTITION.topPixel; i <= PARTITION.bottomPixel; i++) {
         std::copy(image + i * PITCH + PARTITION.leftPixel, image + i * PITCH + PARTITION.rightPixel + 1, OUTPUT_BUFFER + (i - PARTITION.topPixel) * BLOCK_WIDTH);
     }
-    MPI_Request *request = new MPI_Request;
-    MPI_Isend(OUTPUT_BUFFER, BLOCK_WIDTH * BLOCK_HEIGHT, MPI_BYTE, 0, TAG_OUTPUT, MPI_COMM_WORLD, request);
+}
+void copyBlockToBufferFloat(float *image) {
+    for (int i = PARTITION.topPixel; i <= PARTITION.bottomPixel; i++) {
+        std::copy(image + i * PITCH + PARTITION.leftPixel, image + i * PITCH + PARTITION.rightPixel + 1, OUTPUT_BUFFER_FLOAT + (i - PARTITION.topPixel) * BLOCK_WIDTH);
+    }
 }
 
-void recvOutputBlocks(BYTE *image) {
-    MPI_Status status;
-    for (int x = 0; x < NPROC - 1; x++) {
-        MPI_Recv(OUTPUT_BUFFER, BLOCK_WIDTH * BLOCK_HEIGHT, MPI_BYTE, MPI_ANY_SOURCE, TAG_OUTPUT, MPI_COMM_WORLD, &status);
-        int source = status.MPI_SOURCE;
+void recvBlocks(BYTE *image, int recvCount, int tag) {
+    for (; recvCount > 0; recvCount--) {
+        MPI_Status *status = new MPI_Status;
+        MPI_Recv(INPUT_BUFFER, BLOCK_WIDTH * BLOCK_HEIGHT, MPI_BYTE, MPI_ANY_SOURCE, tag, MPI_COMM_WORLD, status);
+        int source = status->MPI_SOURCE;
         for (int i = PARTITIONS[source].topPixel; i <= PARTITIONS[source].bottomPixel; i++) {
-            BYTE *bufferStart = OUTPUT_BUFFER + (i - PARTITIONS[source].topPixel) * BLOCK_WIDTH;
+            BYTE *bufferStart = INPUT_BUFFER + (i - PARTITIONS[source].topPixel) * BLOCK_WIDTH;
             BYTE *bufferEnd = bufferStart + BLOCK_WIDTH;
+            std::copy(bufferStart, bufferEnd, image + i * PITCH + PARTITIONS[source].leftPixel);
+        }
+    }
+}
+
+void recvBlocksFloat(float *image, int recvCount, int tag) {
+    for (; recvCount > 0; recvCount--) {
+        MPI_Status *status = new MPI_Status;
+        MPI_Recv(INPUT_BUFFER_FLOAT, BLOCK_WIDTH * BLOCK_HEIGHT, MPI_FLOAT, MPI_ANY_SOURCE, tag, MPI_COMM_WORLD, status);
+        int source = status->MPI_SOURCE;
+        for (int i = PARTITIONS[source].topPixel; i <= PARTITIONS[source].bottomPixel; i++) {
+            float *bufferStart = INPUT_BUFFER_FLOAT + (i - PARTITIONS[source].topPixel) * BLOCK_WIDTH;
+            float *bufferEnd = bufferStart + BLOCK_WIDTH;
             std::copy(bufferStart, bufferEnd, image + i * PITCH + PARTITIONS[source].leftPixel);
         }
     }
@@ -204,8 +237,11 @@ void applySobelFilter(BYTE *src, BYTE *gradient, float *direction) {
     int yFilter[3][3] = {{1, 2, 1}, {0, 0, 0}, {-1, -2, -1}};
     float maxGradient = 0.f;
     float *gradientTemp = new float[PITCH * HEIGHT];
-    for (int i = 1; i < HEIGHT - 1; i++) {
-        for (int j = 1; j < WIDTH - 1; j++) {
+    for (int i = PARTITION.topPixel; i <= PARTITION.bottomPixel; i++) {
+        for (int j = PARTITION.leftPixel; j <= PARTITION.rightPixel; j++) {
+            if (i == 0 || i == HEIGHT - 1 || j == 0 || j == WIDTH - 1) {
+                continue;
+            }
             float xGradient = 0;
             float yGradient = 0;
             for (int ii = 0; ii < 3; ii++) {
@@ -227,6 +263,8 @@ void applySobelFilter(BYTE *src, BYTE *gradient, float *direction) {
             }
         }
     }
+    float maxGradientToSend = maxGradient;
+    MPI_Allreduce(&maxGradientToSend, &maxGradient, 1, MPI_FLOAT, MPI_MAX, MPI_COMM_WORLD);
 
     for (int i = 1; i < HEIGHT - 1; i++) {
         for (int j = 1; j < WIDTH - 1; j++) {
@@ -236,8 +274,11 @@ void applySobelFilter(BYTE *src, BYTE *gradient, float *direction) {
 }
 
 void applyNonMaxSuppression(BYTE *src, BYTE *dst, float *direction) {
-    for (int i = 1; i < HEIGHT - 1; i++) {
-        for (int j = 1; j < WIDTH - 1; j++) {
+    for (int i = PARTITION.topPixel; i <= PARTITION.bottomPixel; i++) {
+        for (int j = PARTITION.leftPixel; j <= PARTITION.rightPixel; j++) {
+            if (i == 0 || i == HEIGHT - 1 || j == 0 || j == WIDTH - 1) {
+                continue;
+            }
             int q = 255;
             int r = 255;
 
@@ -267,17 +308,28 @@ void applyThreshold(BYTE *image) {
     float lowThresholdRatio = 0.05f;
     float highThresholdRatio = 0.09f;
     int maxPixel = 0;
-    for (int i = 1; i < HEIGHT - 1; i++) {
-        for (int j = 1; j < WIDTH - 1; j++) {
+    for (int i = PARTITION.topPixel; i <= PARTITION.bottomPixel; i++) {
+        for (int j = PARTITION.leftPixel; j <= PARTITION.rightPixel; j++) {
+            if (i == 0 || i == HEIGHT - 1 || j == 0 || j == WIDTH - 1) {
+                continue;
+            }
             if (image[i * PITCH + j] > maxPixel) {
                 maxPixel = image[i * PITCH + j];
             }
         }
     }
+    
+    int maxPixelToSend = maxPixel;
+    MPI_Allreduce(&maxPixelToSend, &maxPixel, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+    
     int highThreshold = maxPixel * highThresholdRatio;
     int lowThreshold = highThreshold * lowThresholdRatio;
-    for (int i = 1; i < HEIGHT - 1; i++) {
-        for (int j = 1; j < WIDTH - 1; j++) {
+
+    for (int i = PARTITION.topPixel; i <= PARTITION.bottomPixel; i++) {
+        for (int j = PARTITION.leftPixel; j <= PARTITION.rightPixel; j++) {
+            if (i == 0 || i == HEIGHT - 1 || j == 0 || j == WIDTH - 1) {
+                continue;
+            }
             if (image[i * PITCH + j] >= highThreshold) {
                 image[i * PITCH + j] = STRONG;
             } else if (image[i * PITCH + j] >= lowThreshold) {
@@ -314,7 +366,7 @@ void saveImage(const char *filepath, FIBITMAP *image, const char *stageName){
     std::string outpath;
     outpath = std::string(filepath); 
     outpath.insert(outpath.length() - 4, stageName);
-    FreeImage_Save(FIF_PNG, image, outpath.c_str());
+    FreeImage_Save(IMAGE_FORMAT, image, outpath.c_str());
     std::cout << outpath << " complete" << std::endl;
 }
 
@@ -340,7 +392,21 @@ void start(int argc, char* argv[]){
     FIBITMAP *image = NULL;
     int info[4];
     if (PROCID == 0) {
-        image = FreeImage_Load(FIF_PNG, filepath);
+        int len = strlen(filepath);
+        if (len < 5){
+            error_exit("image file not found \"%s\"\n", filepath);
+        }
+        const char *ext = filepath + len - 4;
+        if (strcmp(ext, ".jpg") == 0 || strcmp(ext, ".JPG") == 0) {
+            IMAGE_FORMAT = FIF_JPEG;
+        } else if (strcmp(ext, ".png") == 0 || strcmp(ext, ".PNG") == 0) {
+            IMAGE_FORMAT = FIF_PNG;
+        } else if (strcmp(ext, ".bmp") == 0 || strcmp(ext, ".bmp") == 0) {
+            IMAGE_FORMAT = FIF_BMP;
+        } else {
+            error_exit("unsupported image extension \"%s\"\n", ext);
+        }
+        image = FreeImage_Load(IMAGE_FORMAT, filepath);
         if(image == NULL){
             error_exit("image file not found \"%s\"\n", filepath);
         }
@@ -374,7 +440,13 @@ void start(int argc, char* argv[]){
             PARTITION = PARTITIONS[i];
         }
     }
+    if (PROCID == 0) {
+        printf("Rows %d, cols %d\n", BLOCK_ROWS, BLOCK_COLS);
+    }
     OUTPUT_BUFFER = new BYTE[BLOCK_WIDTH * BLOCK_HEIGHT];
+    INPUT_BUFFER = new BYTE[BLOCK_WIDTH * BLOCK_HEIGHT];
+    OUTPUT_BUFFER_FLOAT = new float[BLOCK_WIDTH * BLOCK_HEIGHT];
+    INPUT_BUFFER_FLOAT = new float[BLOCK_WIDTH * BLOCK_HEIGHT];
 
     if (PROCID == 0) {
         FreeImage_ConvertToRawBits(src, image, PITCH, BPP, 0, 0, 0, true);
@@ -382,37 +454,91 @@ void start(int argc, char* argv[]){
     MPI_Bcast(src, PITCH * HEIGHT, MPI_BYTE, 0, MPI_COMM_WORLD);
 
     applyBilateralFilter(src, dst, 9, 30.f, 20.f);
+
+    copyBlockToBuffer(dst);
+    for (int i = 0; i < 9; i++) {
+        if (PARTITION.neigbhors[i] == -1) {
+            continue;
+        }
+        sendBlock(PARTITION.neigbhors[i], TAG_OUTPUT_STEP1);
+    }
+    recvBlocks(dst, PARTITION.neighborCount, TAG_OUTPUT_STEP1);
+
+    // if (PROCID != 0) {
+    //     copyBlockToBuffer(dst);
+    //     sendBlock(0, TAG_OUTPUT_FINAL);
+    // } else {
+    //     recvBlocks(dst, NPROC - 1, TAG_OUTPUT_FINAL);
+    //     saveImage(filepath, dst, "-1-bilateral");
+    // }
+
+    src = dst;
+    dst = new BYTE[PITCH * HEIGHT]();
+    float *direction = new float[PITCH * HEIGHT];
+
+    applySobelFilter(src, dst, direction);
+
+    copyBlockToBuffer(dst);
+    copyBlockToBufferFloat(direction);
+    for (int i = 0; i < 9; i++) {
+        if (PARTITION.neigbhors[i] == -1) {
+            continue;
+        }
+        sendBlock(PARTITION.neigbhors[i], TAG_OUTPUT_STEP2);
+        sendBlockFloat(PARTITION.neigbhors[i], TAG_OUTPUT_STEP2_DIRECTION);
+    }
+    recvBlocks(dst, PARTITION.neighborCount, TAG_OUTPUT_STEP2);
+    recvBlocksFloat(direction, PARTITION.neighborCount, TAG_OUTPUT_STEP2_DIRECTION);
+
+    // if (PROCID != 0) {
+    //     copyBlockToBuffer(dst);
+    //     sendBlock(0, TAG_OUTPUT_FINAL);
+    // } else {
+    //     recvBlocks(dst, NPROC - 1, TAG_OUTPUT_FINAL);
+    //     saveImage(filepath, dst, "-2-sobel");
+    // }
+
+    src = dst;
+    dst = new BYTE[PITCH * HEIGHT]();
+
+    applyNonMaxSuppression(src, dst, direction);
+
+    // if (PROCID != 0) {
+    //     copyBlockToBuffer(dst);
+    //     sendBlock(0, TAG_OUTPUT_FINAL);
+    // } else {
+    //     recvBlocks(dst, NPROC - 1, TAG_OUTPUT_FINAL);
+    //     saveImage(filepath, dst, "-3-nonmax");
+    // }
+
+    applyThreshold(dst);
+
+    // if (PROCID != 0) {
+    //     copyBlockToBuffer(dst);
+    //     sendBlock(0, TAG_OUTPUT_FINAL);
+    // } else {
+    //     recvBlocks(dst, NPROC - 1, TAG_OUTPUT_FINAL);
+    //     saveImage(filepath, dst, "-4-thres");
+    // }
+
+    copyBlockToBuffer(dst);
+    for (int i = 0; i < 9; i++) {
+        if (PARTITION.neigbhors[i] == -1) {
+            continue;
+        }
+        sendBlock(PARTITION.neigbhors[i], TAG_OUTPUT_STEP4);
+    }
+    recvBlocks(dst, PARTITION.neighborCount, TAG_OUTPUT_STEP4);
+
+    applyHysteresis(dst);
+
     if (PROCID != 0) {
-        sendOutputBlock(dst);
+        copyBlockToBuffer(dst);
+        sendBlock(0, TAG_OUTPUT_FINAL);
     } else {
-        recvOutputBlocks(dst);
+        recvBlocks(dst, NPROC - 1, TAG_OUTPUT_FINAL);
+        saveImage(filepath, dst, "-5-hyster");
     }
-
-    if (PROCID == 0) {
-        saveImage(filepath, dst, "-1-bilateral");
-    }
-
-    // src = dst;
-    // dst = new BYTE[PITCH * HEIGHT]();
-    // float *direction = new float[PITCH * HEIGHT];
-
-    // applySobelFilter(src, dst, direction);
-    // // saveImage(filepath, dst, "-2-sobel");
-
-    // src = dst;
-    // dst = new BYTE[PITCH * HEIGHT]();
-
-    // applyNonMaxSuppression(src, dst, direction);
-    // // saveImage(filepath, dst, "-3-nonmax");
-
-    // applyThreshold(dst);
-    // saveImage(filepath, dst, "-4-thres");
-
-    // src = dst;
-    // dst = new BYTE[PITCH * HEIGHT]();
-
-    // applyHysteresis(dst);
-    // saveImage(filepath, dst, "-5-hyster");
 }
 
 int main(int argc, char* argv[]) {
