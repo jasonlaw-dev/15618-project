@@ -1,7 +1,11 @@
 #include <FreeImage.h>
 #include <math.h>
-
+#include <string.h>
 #include <iostream>
+#include <stdlib.h>
+#include <cstring>
+
+int bpp, width, height, pitch;
 
 // https://github.com/anlcnydn/bilateral/blob/master/bilateral_filter.cpp
 float distance(int x, int y, int i, int j) {
@@ -109,7 +113,7 @@ void applyNonMaxSuppression(BYTE *src, BYTE *dst, float *direction, int imageWid
     }
 }
 
-int WEAK = 25;
+int WEAK = 0;
 int STRONG = 255;
 
 void applyThreshold(BYTE *image, int imageWidth, int imageHeight) {
@@ -142,7 +146,10 @@ void applyHysteresis(BYTE *image, int imageWidth, int imageHeight) {
     for (int i = 1; i < imageHeight - 1; i++) {
         for (int j = 1; j < imageWidth - 1; j++) {
             if (image[i * imageWidth+ j] == WEAK) {
-                if ((image[(i + 1) * imageWidth + j - 1] == STRONG) || (image[(i + 1) * imageWidth + j] == STRONG) || (image[(i + 1) * imageWidth + j + 1] == STRONG) || (image[i * imageWidth + j - 1] == STRONG) or (image[i * imageWidth + j + 1] == STRONG) || (image[(i - 1) * imageWidth + j - 1] == STRONG) or (image[(i - 1) * imageWidth + j] == STRONG) or (image[(i - 1) * imageWidth + j + 1] == STRONG)) {
+                if ((image[(i + 1) * imageWidth + j - 1] == STRONG) || (image[(i + 1) * imageWidth + j] == STRONG) 
+                || (image[(i + 1) * imageWidth + j + 1] == STRONG) || (image[i * imageWidth + j - 1] == STRONG) 
+                || (image[i * imageWidth + j + 1] == STRONG) || (image[(i - 1) * imageWidth + j - 1] == STRONG) 
+                || (image[(i - 1) * imageWidth + j] == STRONG) || (image[(i - 1) * imageWidth + j + 1] == STRONG)) {
                     image[i* imageWidth+ j] = STRONG;
                 } else {
                     image[i* imageWidth+ j] = 0;
@@ -153,56 +160,73 @@ void applyHysteresis(BYTE *image, int imageWidth, int imageHeight) {
 }
 
 void printImageInfo(FIBITMAP *image) {
-    int bpp, width, height, pitch;
-
-    bpp = FreeImage_GetBPP(image);
-    width = FreeImage_GetWidth(image);
-    height = FreeImage_GetHeight(image);
-    pitch = FreeImage_GetPitch(image);
     std::cout << "BPP: " << bpp << " Width: " << width << " Height: " << height << " Pitch: " << pitch << " Red mask: " << FreeImage_GetRedMask(image) << std::endl;
 }
 
-int main() {
-    FIBITMAP *image = FreeImage_Load(FIF_PNG, "images/valve.png");
+void saveImage(const char *filepath, BYTE *dst, const char *stageName){
+    FIBITMAP *image = FreeImage_ConvertFromRawBits(dst, width, height, pitch, bpp, 0, 0, 0);
+    std::string outpath;
+    outpath = std::string(filepath); 
+    outpath.insert(outpath.length() - 4, stageName);
+    FreeImage_Save(FIF_PNG, image, outpath.c_str());
+}
+
+int main(int argc, char* argv[]) {
+    const char* filepath = "";
+
+    if(argc < 3){
+        std::cout << "Usage: ./main -f <image file>" << std::endl;
+        exit(-1);
+    }
+    if(strcmp(argv[1], "-f") == 0){
+        filepath = argv[2];
+    }
+    else{
+        std::cout << "Usage: ./main -f <image file>" << std::endl;
+        exit(-1);
+    }
+    //"images/valve.png"
+
+    FIBITMAP *image = FreeImage_Load(FIF_PNG, filepath);
 
     image = FreeImage_ConvertToGreyscale(image);
     image = FreeImage_ConvertTo8Bits(image);
 
-    printImageInfo(image);
-
-    int bpp, width, height, pitch;
     bpp = FreeImage_GetBPP(image);
     width = FreeImage_GetWidth(image);
     height = FreeImage_GetHeight(image);
     pitch = FreeImage_GetPitch(image);
+
+    printImageInfo(image);
 
     BYTE *src = new BYTE[width * height];
     BYTE *dst = new BYTE[width * height]();
 
     FreeImage_ConvertToRawBits(src, image, pitch, bpp, 0, 0, 0);
 
-    applyBilateralFilter(src, dst, width, height, 5, 75.f, 75.f);
+    applyBilateralFilter(src, dst, width, height, 8, 30.f, 20.f);
+    saveImage(filepath, dst, "-1-bilateral");
 
     src = dst;
     dst = new BYTE[width * height]();
     float *direction = new float[width * height];
 
     applySobelFilter(src, dst, direction, width, height);
+    saveImage(filepath, dst, "-2-sobel");
 
     src = dst;
     dst = new BYTE[width * height]();
 
     applyNonMaxSuppression(src, dst, direction, width, height);
+    saveImage(filepath, dst, "-3-nonmax");
 
     applyThreshold(dst, width, height);
+    saveImage(filepath, dst, "-4-thres");
 
     // src = dst;
     // dst = new BYTE[width * height]();
 
-    applyHysteresis(dst, width,height);
-
-    image = FreeImage_ConvertFromRawBits(dst, width, height, pitch, bpp, 0, 0, 0);
-
-    FreeImage_Save(FIF_PNG, image, "images/valve-output.png");
+    // applyHysteresis(dst, width,height);
+    // saveImage(filepath, dst, "-5-hyster");
     return 0;
 }
