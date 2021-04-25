@@ -10,11 +10,25 @@
 
 #include "mpi.h"
 
+#define SYSEXPECT(expr)       \
+    do {                      \
+        if (!(expr)) {        \
+            perror(__func__); \
+            exit(1);          \
+        }                     \
+    } while (0)
+#define error_exit(fmt, ...)                                        \
+    do {                                                            \
+        fprintf(stderr, "%s error: " fmt, __func__, ##__VA_ARGS__); \
+        exit(1);                                                    \
+    } while (0);
+
 int bpp, width, height, pitch;
 int NPROC = -1;  // TODO: this isn't being used anywhere.
 int PROCID = -1;
 int WEAK = 0;
 int STRONG = 255;
+FIBITMAP *IMAGE;
 
 // https://github.com/anlcnydn/bilateral/blob/master/bilateral_filter.cpp
 float distance(int x, int y, int i, int j) {
@@ -178,31 +192,45 @@ void saveImage(const char *filepath, BYTE *dst, const char *stageName){
     std::cout << outpath << " complete" << std::endl;
 }
 
-void start(int procID, int nproc, const char *filepath){
+void start(int procID, int nproc, int argc, char* argv[]){
 
     PROCID = procID;
     NPROC = nproc;
-    // const int root = 0;  // Set the rank 0 process as the root process
+    //const int root = 0;  // Set the rank 0 process as the root process
 
     // assign tasks
-    
-    
-    FIBITMAP *image = FreeImage_Load(FIF_PNG, filepath);
+    const char* filepath = "";
 
-    image = FreeImage_ConvertToGreyscale(image);
-    image = FreeImage_ConvertTo8Bits(image);
+        if(argc < 3){
+            std::cout << "Usage: mpirun -n <# of cores> ./main -f <image file>" << std::endl;
+            exit(-1);
+        }
+        if(strcmp(argv[1], "-f") == 0){
+            filepath = argv[2];
+        }
+        else{
+            std::cout << "Usage: mpirun -n <# of cores> ./main -f <image file>" << std::endl;
+            exit(-1);
+        }
 
-    bpp = FreeImage_GetBPP(image);
-    width = FreeImage_GetWidth(image);
-    height = FreeImage_GetHeight(image);
-    pitch = FreeImage_GetPitch(image);
+        IMAGE = FreeImage_Load(FIF_PNG, filepath);
+        if(IMAGE == NULL){
+            error_exit("image file not found \"%s\"\n", filepath);
+        }
+        IMAGE = FreeImage_ConvertToGreyscale(IMAGE);
+        IMAGE = FreeImage_ConvertTo8Bits(IMAGE);
 
-    printImageInfo(image);
+    bpp = FreeImage_GetBPP(IMAGE);
+    width = FreeImage_GetWidth(IMAGE);
+    height = FreeImage_GetHeight(IMAGE);
+    pitch = FreeImage_GetPitch(IMAGE);
+
+    printImageInfo(IMAGE);
 
     BYTE *src = new BYTE[width * height];
     BYTE *dst = new BYTE[width * height]();
 
-    FreeImage_ConvertToRawBits(src, image, pitch, bpp, 0, 0, 0);
+    FreeImage_ConvertToRawBits(src, IMAGE, pitch, bpp, 0, 0, 0);
 
     applyBilateralFilter(src, dst, width, height, 8, 30.f, 20.f);
     saveImage(filepath, dst, "-1-bilateral");
@@ -245,25 +273,9 @@ int main(int argc, char* argv[]) {
     // Get total number of processes specificed at start of run
     MPI_Comm_size(MPI_COMM_WORLD, &nproc);
 
-
-    const char* filepath = "";
-
-    if(argc < 3){
-        std::cout << "Usage: mpirun -n <# of cores> ./main -f <image file>" << std::endl;
-        return -1;
-    }
-    if(strcmp(argv[1], "-f") == 0){
-        filepath = argv[2];
-    }
-    else{
-        std::cout << "Usage: mpirun -n <# of cores> ./main -f <image file>" << std::endl;
-        return -1;
-    }
-    //"images/valve.png"
-
     // Run computation
     startTime = MPI_Wtime();
-    start(procID, nproc, filepath);
+    start(procID, nproc, argc, argv);
     endTime = MPI_Wtime();
 
     // Compute running time
