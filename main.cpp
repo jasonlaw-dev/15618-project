@@ -203,6 +203,7 @@ void applyBilateralFilter(BYTE *src, BYTE *dst, int diameter, float sigmaI, floa
             int neighbor_i = 0;
             int neighbor_j = 0;
 
+
             for (int ii = 0; ii < diameter; ii++) {
                 for (int jj = 0; jj < diameter; jj++) {
                     neighbor_i = i - (half - ii);
@@ -387,7 +388,7 @@ void aggregateOutputAndSaveImage(const char *filepath, BYTE *dst, const char *st
 
 void start(int argc, char* argv[]){
     const char* filepath = "";
-
+    int stage = 0;
     if (argc < 3) {
         std::cout << "Usage: mpirun -n <# of cores> ./main -f <image file>" << std::endl;
         exit(-1);
@@ -397,6 +398,11 @@ void start(int argc, char* argv[]){
     } else {
         std::cout << "Usage: mpirun -n <# of cores> ./main -f <image file>" << std::endl;
         exit(-1);
+    }
+    if (argc == 4){
+        if(strcmp(argv[3], "-s") == 0){
+            stage = 1;
+        }
     }
 
     FIBITMAP *image = NULL;
@@ -474,7 +480,10 @@ void start(int argc, char* argv[]){
     }
     recvBlocks(dst, PARTITION.neighborCount, TAG_OUTPUT_STEP1);
 
-    // aggregateOutputAndSaveImage(filepath, dst, "-1-bilateral");
+    if(stage == 1){
+        aggregateOutputAndSaveImage(filepath, dst, "-1-bilateral");
+        return;
+    }
 
     src = dst;
     dst = new BYTE[PITCH * HEIGHT]();
