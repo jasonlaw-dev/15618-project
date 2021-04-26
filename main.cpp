@@ -185,6 +185,59 @@ void recvBlocksFloat(float *image, int recvCount, int tag) {
     }
 }
 
+// https://github.com/aekanman/gaussian-blur/blob/master/helper.cpp
+float* getGaussianFilterKernel(int diameter, float sigma) {
+    float *filter = new float[diameter * diameter];
+    int half = diameter / 2;
+    float filterSum = 0.f; //for normalization
+    for (int r = -half; r <= half; ++r) {
+        for (int c = -half; c <= half; ++c) {
+            float filterValue = expf( -(float)(c * c + r * r) / (2.f * sigma * sigma));
+            filter[(r + half) * diameter + c + half] = filterValue;
+            filterSum += filterValue;
+        }
+    }
+
+    float normalizationFactor = 1.f / filterSum;
+    for (int r = -half; r <= half; ++r) {
+        for (int c = -half; c <= half; ++c) {
+            filter[(r + half) * diameter + c + half] *= normalizationFactor;
+        }
+    }
+    return filter;
+}
+
+void applyGaussianFilter(BYTE *src, BYTE *dst, int diameter, float *filter) {
+    int half = diameter / 2;
+    for (int i = PARTITION.topPixel; i <= PARTITION.bottomPixel; i++) {
+        for (int j = PARTITION.leftPixel; j <= PARTITION.rightPixel; j++) {
+            float iFiltered = 0;
+            int neighbor_i = 0;
+            int neighbor_j = 0;
+
+            for (int ii = 0; ii < diameter; ii++) {
+                for (int jj = 0; jj < diameter; jj++) {
+                    neighbor_i = i - (half - ii);
+                    neighbor_j = j - (half - jj);
+                    if (neighbor_i < 0) {
+                        neighbor_i += diameter + 1;
+                    } else if (neighbor_i >= HEIGHT) {
+                        neighbor_i -= diameter + 1;
+                    }
+                    if (neighbor_j < 0) {
+                        neighbor_j += diameter + 1;
+                    } else if (neighbor_j >= WIDTH) {
+                        neighbor_j -= diameter + 1;
+                    }
+
+                    iFiltered += src[neighbor_i * PITCH + neighbor_j] * filter[ii * diameter + jj];
+                }
+            }
+            dst[i * PITCH + j] = iFiltered;
+        }
+    }
+}
+
 // https://github.com/anlcnydn/bilateral/blob/master/bilateral_filter.cpp
 float distance(int x, int y, int i, int j) {
     return sqrtf(powf(x - i, 2) + powf(y - j, 2));
@@ -202,7 +255,6 @@ void applyBilateralFilter(BYTE *src, BYTE *dst, int diameter, float sigmaI, floa
             float wP = 0;
             int neighbor_i = 0;
             int neighbor_j = 0;
-
 
             for (int ii = 0; ii < diameter; ii++) {
                 for (int jj = 0; jj < diameter; jj++) {
@@ -469,7 +521,10 @@ void start(int argc, char* argv[]){
     }
     MPI_Bcast(src, PITCH * HEIGHT, MPI_BYTE, 0, MPI_COMM_WORLD);
 
-    applyBilateralFilter(src, dst, 9, 30.f, 20.f);
+    float *gaussianFilter = getGaussianFilterKernel(15, 2.f);
+    applyGaussianFilter(src, dst, 15, gaussianFilter);
+    
+    // applyBilateralFilter(src, dst, 9, 30.f, 20.f);
 
     copyBlockToBuffer(dst);
     for (int i = 0; i < 9; i++) {
@@ -481,7 +536,8 @@ void start(int argc, char* argv[]){
     recvBlocks(dst, PARTITION.neighborCount, TAG_OUTPUT_STEP1);
 
     if(stage == 1){
-        aggregateOutputAndSaveImage(filepath, dst, "-1-bilateral");
+        aggregateOutputAndSaveImage(filepath, dst, "-1-gaussian");
+        // aggregateOutputAndSaveImage(filepath, dst, "-1-bilateral");
         return;
     }
 
