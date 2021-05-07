@@ -1,6 +1,7 @@
 #include <FreeImage.h>
 #include <math.h>
 #include <string.h>
+#include <unistd.h>
 #include <iostream>
 #include <stdlib.h>
 #include <cstring>
@@ -441,19 +442,25 @@ void aggregateOutputAndSaveImage(const char *filepath, BYTE *dst, const char *st
 void start(int argc, char* argv[]){
     const char* filepath = "";
     int stage = 0;
+    int ch = 0;
+    bool useGaussian = 0;
     if (argc < 3) {
         std::cout << "Usage: mpirun -n <# of cores> ./main -f <image file>" << std::endl;
         exit(-1);
     }
-    if (strcmp(argv[1], "-f") == 0) {
-        filepath = argv[2];
-    } else {
-        std::cout << "Usage: mpirun -n <# of cores> ./main -f <image file>" << std::endl;
-        exit(-1);
-    }
-    if (argc == 4){
-        if(strcmp(argv[3], "-s") == 0){
-            stage = 1;
+    while ((ch = getopt(argc, argv, "f:s:g")) != -1)
+    {
+        switch (ch)
+        {
+            case 'f':
+                filepath = optarg;
+                break;
+            case 's':
+                stage = atoi(optarg);
+                break;
+            case 'g':
+                useGaussian = 1;
+                break;
         }
     }
 
@@ -521,10 +528,12 @@ void start(int argc, char* argv[]){
     }
     MPI_Bcast(src, PITCH * HEIGHT, MPI_BYTE, 0, MPI_COMM_WORLD);
 
-    float *gaussianFilter = getGaussianFilterKernel(15, 2.f);
-    applyGaussianFilter(src, dst, 15, gaussianFilter);
-    
-    // applyBilateralFilter(src, dst, 9, 30.f, 20.f);
+    if(useGaussian){
+        float *gaussianFilter = getGaussianFilterKernel(15, 2.f);
+        applyGaussianFilter(src, dst, 15, gaussianFilter);
+    } else {
+        applyBilateralFilter(src, dst, 9, 30.f, 20.f);
+    }
 
     copyBlockToBuffer(dst);
     for (int i = 0; i < 9; i++) {
@@ -536,8 +545,11 @@ void start(int argc, char* argv[]){
     recvBlocks(dst, PARTITION.neighborCount, TAG_OUTPUT_STEP1);
 
     if(stage == 1){
-        aggregateOutputAndSaveImage(filepath, dst, "-1-gaussian");
-        // aggregateOutputAndSaveImage(filepath, dst, "-1-bilateral");
+        if(useGaussian){
+            aggregateOutputAndSaveImage(filepath, dst, "-1-gaussian");
+        } else {
+            aggregateOutputAndSaveImage(filepath, dst, "-1-bilateral");
+        }
         return;
     }
 
@@ -559,18 +571,27 @@ void start(int argc, char* argv[]){
     recvBlocks(dst, PARTITION.neighborCount, TAG_OUTPUT_STEP2);
     recvBlocksFloat(direction, PARTITION.neighborCount, TAG_OUTPUT_STEP2_DIRECTION);
 
-    // aggregateOutputAndSaveImage(filepath, dst, "-2-sobel");
+    if(stage == 2){
+        aggregateOutputAndSaveImage(filepath, dst, "-2-sobel");
+        return;
+    }
 
     src = dst;
     dst = new BYTE[PITCH * HEIGHT]();
 
     applyNonMaxSuppression(src, dst, direction);
 
-    // aggregateOutputAndSaveImage(filepath, dst, "-3-nonmax");
+    if(stage == 3){
+        aggregateOutputAndSaveImage(filepath, dst, "-3-nonmax");
+        return;
+    }
 
     applyThreshold(dst);
 
-    // aggregateOutputAndSaveImage(filepath, dst, "-4-thres");
+    if(stage == 4){
+        aggregateOutputAndSaveImage(filepath, dst, "-4-thres");
+        return;
+    }
 
     copyBlockToBuffer(dst);
     for (int i = 0; i < 9; i++) {
