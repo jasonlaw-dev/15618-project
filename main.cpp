@@ -8,6 +8,9 @@
 #include <locale>
 #include <assert.h>
 #include <stdio.h>
+#include "griditerator.h"
+#include "partitioninfo.h"
+#include <utility>
 
 #include "mpi.h"
 
@@ -43,16 +46,8 @@ int TAG_OUTPUT_STEP2_DIRECTION = 2002;
 int TAG_OUTPUT_STEP4 = 1004;
 int TAG_OUTPUT_FINAL = 1005;
 
-struct PartitionInfo {
-    // pixel index
-    int topPixel;
-    int bottomPixel;
-    int leftPixel;
-    int rightPixel;
-
-    int neigbhors[9];
-    int neighborCount;
-};
+double startTime;
+double endTime;
 
 PartitionInfo PARTITION;
 PartitionInfo *PARTITIONS = NULL;
@@ -208,6 +203,21 @@ float* getGaussianFilterKernel(int diameter, float sigma) {
     return filter;
 }
 
+/*
+Iterator class (PARTITION, which cell to start (2))
+state current index
+next(): change index from left - right, then top to bottom, ij 
+
+we are doing 3x3 convolution
+(1,1), (1,2) (1,3), (1,4)
+(2,1), (2,2)
+
+
+(0,0)(0,1)(0,2)(0,3) ... (0,5)
+(1,0)(1,5)
+(2,0)(2,5)
+*/
+
 void applyGaussianFilter(BYTE *src, BYTE *dst, int diameter, float *filter) {
     int half = diameter / 2;
     for (int i = PARTITION.topPixel; i <= PARTITION.bottomPixel; i++) {
@@ -250,38 +260,41 @@ float gaussian(float x, double sigma) {
 
 void applyBilateralFilter(BYTE *src, BYTE *dst, int diameter, float sigmaI, float sigmaS) {
     int half = diameter / 2;
-    for (int i = PARTITION.topPixel; i <= PARTITION.bottomPixel; i++) {
-        for (int j = PARTITION.leftPixel; j <= PARTITION.rightPixel; j++) {
-            float iFiltered = 0;
-            float wP = 0;
-            int neighbor_i = 0;
-            int neighbor_j = 0;
+    GridIterator iter(PARTITION, 5, PROCID);
+    int count = 0;
+    for (std::pair<int,int> ij = iter.next(); ij.first != -1; ij = iter.next()) {
+        count++;
+        int i = ij.first;
+        int j = ij.second;
+        float iFiltered = 0;
+        float wP = 0;
+        int neighbor_i = 0;
+        int neighbor_j = 0;
 
-            for (int ii = 0; ii < diameter; ii++) {
-                for (int jj = 0; jj < diameter; jj++) {
-                    neighbor_i = i - (half - ii);
-                    neighbor_j = j - (half - jj);
-                    if (neighbor_i < 0) {
-                        neighbor_i += diameter + 1;
-                    } else if (neighbor_i >= HEIGHT) {
-                        neighbor_i -= diameter + 1;
-                    }
-                    if (neighbor_j < 0) {
-                        neighbor_j += diameter + 1;
-                    } else if (neighbor_j >= WIDTH) {
-                        neighbor_j -= diameter + 1;
-                    }
-
-                    float gi = gaussian(src[neighbor_i * PITCH + neighbor_j] - src[i * PITCH + j], sigmaI);
-                    float gs = gaussian(distance(i, j, neighbor_i, neighbor_j), sigmaS);
-                    float w = gi * gs;
-                    iFiltered = iFiltered + src[neighbor_i * PITCH + neighbor_j] * w;
-                    wP = wP + w;
+        for (int ii = 0; ii < diameter; ii++) {
+            for (int jj = 0; jj < diameter; jj++) {
+                neighbor_i = i - (half - ii);
+                neighbor_j = j - (half - jj);
+                if (neighbor_i < 0) {
+                    neighbor_i += diameter + 1;
+                } else if (neighbor_i >= HEIGHT) {
+                    neighbor_i -= diameter + 1;
                 }
+                if (neighbor_j < 0) {
+                    neighbor_j += diameter + 1;
+                } else if (neighbor_j >= WIDTH) {
+                    neighbor_j -= diameter + 1;
+                }
+
+                float gi = gaussian(src[neighbor_i * PITCH + neighbor_j] - src[i * PITCH + j], sigmaI);
+                float gs = gaussian(distance(i, j, neighbor_i, neighbor_j), sigmaS);
+                float w = gi * gs;
+                iFiltered = iFiltered + src[neighbor_i * PITCH + neighbor_j] * w;
+                wP = wP + w;
             }
-            iFiltered = iFiltered / wP;
-            dst[i * PITCH + j] = iFiltered;
         }
+        iFiltered = iFiltered / wP;
+        dst[i * PITCH + j] = iFiltered;
     }
 }
 
@@ -526,11 +539,14 @@ void start(int argc, char* argv[]){
     if (PROCID == 0) {
         FreeImage_ConvertToRawBits(src, image, PITCH, BPP, 0, 0, 0, true);
     }
+    startTime = MPI_Wtime();
+    
     MPI_Bcast(src, PITCH * HEIGHT, MPI_BYTE, 0, MPI_COMM_WORLD);
 
     if(useGaussian){
-        float *gaussianFilter = getGaussianFilterKernel(15, 2.f);
-        applyGaussianFilter(src, dst, 15, gaussianFilter);
+        int diameter = 15;
+        float *gaussianFilter = getGaussianFilterKernel(diameter, 2.f);
+        applyGaussianFilter(src, dst, diameter, gaussianFilter);
     } else {
         applyBilateralFilter(src, dst, 9, 30.f, 20.f);
     }
@@ -545,6 +561,7 @@ void start(int argc, char* argv[]){
     recvBlocks(dst, PARTITION.neighborCount, TAG_OUTPUT_STEP1);
 
     if(stage == 1){
+        printf("stage 1: elapsed time for proc %d: %f\n", PROCID, MPI_Wtime() - startTime);
         if(useGaussian){
             aggregateOutputAndSaveImage(filepath, dst, "-1-gaussian");
         } else {
@@ -572,6 +589,7 @@ void start(int argc, char* argv[]){
     recvBlocksFloat(direction, PARTITION.neighborCount, TAG_OUTPUT_STEP2_DIRECTION);
 
     if(stage == 2){
+        printf("stage 2: elapsed time for proc %d: %f\n", PROCID, MPI_Wtime() - startTime);
         aggregateOutputAndSaveImage(filepath, dst, "-2-sobel");
         return;
     }
@@ -582,6 +600,7 @@ void start(int argc, char* argv[]){
     applyNonMaxSuppression(src, dst, direction);
 
     if(stage == 3){
+        printf("stage 3: elapsed time for proc %d: %f\n", PROCID, MPI_Wtime() - startTime);
         aggregateOutputAndSaveImage(filepath, dst, "-3-nonmax");
         return;
     }
@@ -589,6 +608,7 @@ void start(int argc, char* argv[]){
     applyThreshold(dst);
 
     if(stage == 4){
+        printf("stage 4: elapsed time for proc %d: %f\n", PROCID, MPI_Wtime() - startTime);
         aggregateOutputAndSaveImage(filepath, dst, "-4-thres");
         return;
     }
@@ -604,14 +624,14 @@ void start(int argc, char* argv[]){
 
     applyHysteresis(dst);
 
+    endTime = MPI_Wtime();
+
     aggregateOutputAndSaveImage(filepath, dst, "-5-hyster");
 }
 
 int main(int argc, char* argv[]) {
     int procID;
     int nproc;
-    double startTime;
-    double endTime;
 
     // Initialize MPI
     MPI_Init(&argc, &argv);
@@ -623,11 +643,10 @@ int main(int argc, char* argv[]) {
     MPI_Comm_size(MPI_COMM_WORLD, &nproc);
 
     // Run computation
-    startTime = MPI_Wtime();
     PROCID = procID;
     NPROC = nproc;
     start(argc, argv);
-    endTime = MPI_Wtime();
+    
 
     // Compute running time
     MPI_Finalize();
