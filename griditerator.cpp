@@ -2,7 +2,7 @@
 #include "griditerator.h"
 #include <iostream>
 
-GridIterator::GridIterator(PartitionInfo partition, int borderWidth, int pitch): partition(partition), borderWidth(borderWidth), pitch(pitch), innerFinished(false) {
+GridIterator::GridIterator(PartitionInfo partition, int borderWidth, int PROCID): partition(partition), borderWidth(borderWidth), innerFinished(false), PROCID(PROCID) {
     innerTopPixel = std::min(partition.topPixel + borderWidth, partition.bottomPixel);
     if (partition.neigbhors[1] == -1) {
         innerTopPixel = partition.topPixel;
@@ -24,15 +24,19 @@ GridIterator::GridIterator(PartitionInfo partition, int borderWidth, int pitch):
     j = innerLeftPixel;
 }
 
-bool GridIterator::hasNext() {
-    return !(i == -1 && j == -1);
-}
-
 std::pair<int, int> GridIterator::next() {
     std::pair<int, int> ret(i, j);
-    // std::cout << "i: "  << i << " j: " << j << std::endl;
+    if (i == -1) {
+        return ret;
+    }
+    // if (i == 1024 && j >= 842 && j <= 843) {
+    //     std::cout<<"i: " << i << " j: " << j << std::endl;
+    // }
 
     if ((i == innerBottomPixel && j == innerRightPixel) || innerFinished) {
+        if (PROCID == 0) {
+            std::cout <<"i: " << i << " j: " << j << " if condition\n";
+        }
         if (innerFinished) {
             j++;
         } else {
@@ -41,20 +45,26 @@ std::pair<int, int> GridIterator::next() {
             innerFinished = true;
         }
         bool done = false;
-        for (; !done && i <= partition.bottomPixel; i++) {
-            for (; !done && j <= partition.rightPixel; j++) {
+        for (; i <= partition.bottomPixel; i++) {
+            for (; j <= partition.rightPixel; j++) {
                 if (!(i >= innerTopPixel && i <= innerBottomPixel && j >= innerLeftPixel && j <= innerRightPixel)) {
                     done = true;
+                    break;
                 }
             }
-            if (!done) {
-                j = partition.leftPixel;
+            if (done) {
+                break;
             }
+            j = partition.leftPixel;
         }
         if (!done) {
-            i = j = -1;
+            i = -1;
         }
     } else {
+    // if (i == 1024 && j >= 842 && j <= 843) {
+    //     std::cout <<"i: " << i << " j: " << j << " else condition\n";
+    // }
+        
         j++;
         if (j > innerRightPixel) {
             i++;
