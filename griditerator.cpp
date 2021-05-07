@@ -1,8 +1,9 @@
 #include <algorithm>
 #include "griditerator.h"
 #include <iostream>
+#include <stdio.h>
 
-GridIterator::GridIterator(PartitionInfo partition, int borderWidth, int PROCID): partition(partition), borderWidth(borderWidth), innerFinished(false), PROCID(PROCID) {
+GridIterator::GridIterator(PartitionInfo partition, int borderWidth, int PROCID): partition(partition), borderWidth(borderWidth), innerFinished(false), PROCID(PROCID), communicate(false) {
     innerTopPixel = std::min(partition.topPixel + borderWidth, partition.bottomPixel);
     if (partition.neigbhors[1] == -1) {
         innerTopPixel = partition.topPixel;
@@ -29,20 +30,15 @@ std::pair<int, int> GridIterator::next() {
     if (i == -1) {
         return ret;
     }
-    // if (i == 1024 && j >= 842 && j <= 843) {
-    //     std::cout<<"i: " << i << " j: " << j << std::endl;
-    // }
-
     if ((i == innerBottomPixel && j == innerRightPixel) || innerFinished) {
-        if (PROCID == 0) {
-            std::cout <<"i: " << i << " j: " << j << " if condition\n";
-        }
         if (innerFinished) {
             j++;
+            communicate = false;
         } else {
             i = partition.topPixel;
             j = partition.leftPixel;
             innerFinished = true;
+            communicate = partition.neighborCount > 0;
         }
         bool done = false;
         for (; i <= partition.bottomPixel; i++) {
@@ -61,10 +57,6 @@ std::pair<int, int> GridIterator::next() {
             i = -1;
         }
     } else {
-    // if (i == 1024 && j >= 842 && j <= 843) {
-    //     std::cout <<"i: " << i << " j: " << j << " else condition\n";
-    // }
-        
         j++;
         if (j > innerRightPixel) {
             i++;
@@ -72,4 +64,8 @@ std::pair<int, int> GridIterator::next() {
         }
     }
     return ret;
+}
+
+bool GridIterator::shouldCommunicate() {
+    return communicate;
 }

@@ -16,10 +16,11 @@ private:
     int innerLeftPixel;
     int innerRightPixel;
     int PROCID;
+    bool communicate;
 public:
     GridIterator(PartitionInfo partition, int borderWidth, int PROCID);
     std::pair<int, int> next();
-    // bool shouldCommunicate();
+    bool shouldCommunicate();
 };
 
 #endif

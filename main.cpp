@@ -261,9 +261,7 @@ float gaussian(float x, double sigma) {
 void applyBilateralFilter(BYTE *src, BYTE *dst, int diameter, float sigmaI, float sigmaS) {
     int half = diameter / 2;
     GridIterator iter(PARTITION, 5, PROCID);
-    int count = 0;
     for (std::pair<int,int> ij = iter.next(); ij.first != -1; ij = iter.next()) {
-        count++;
         int i = ij.first;
         int j = ij.second;
         float iFiltered = 0;
@@ -304,30 +302,37 @@ void applySobelFilter(BYTE *src, BYTE *gradient, float *direction) {
     int yFilter[3][3] = {{1, 2, 1}, {0, 0, 0}, {-1, -2, -1}};
     float maxGradient = 0.f;
     float *gradientTemp = new float[PITCH * HEIGHT];
-    for (int i = PARTITION.topPixel; i <= PARTITION.bottomPixel; i++) {
-        for (int j = PARTITION.leftPixel; j <= PARTITION.rightPixel; j++) {
-            if (i == 0 || i == HEIGHT - 1 || j == 0 || j == WIDTH - 1) {
-                continue;
+    GridIterator iter(PARTITION, 1, PROCID);
+    for (std::pair<int,int> ij = iter.next(); ij.first != -1; ij = iter.next()) {
+        int i = ij.first;
+        int j = ij.second;
+        if (i == 0 || i == HEIGHT - 1 || j == 0 || j == WIDTH - 1) {
+            if (iter.shouldCommunicate()) {
+                recvBlocks(src, PARTITION.neighborCount, TAG_OUTPUT_STEP1);
             }
-            float xGradient = 0;
-            float yGradient = 0;
-            for (int ii = 0; ii < 3; ii++) {
-                for (int jj = 0; jj < 3; jj++) {
-                    int neighbor_i = i + ii - 1;
-                    int neighbor_j = j + jj - 1;
-                    xGradient += xFilter[ii][jj] * src[neighbor_i * PITCH + neighbor_j];
-                    yGradient += yFilter[ii][jj] * src[neighbor_i * PITCH + neighbor_j];
-                }
+            continue;
+        }
+        float xGradient = 0;
+        float yGradient = 0;
+        for (int ii = 0; ii < 3; ii++) {
+            for (int jj = 0; jj < 3; jj++) {
+                int neighbor_i = i + ii - 1;
+                int neighbor_j = j + jj - 1;
+                xGradient += xFilter[ii][jj] * src[neighbor_i * PITCH + neighbor_j];
+                yGradient += yFilter[ii][jj] * src[neighbor_i * PITCH + neighbor_j];
             }
-            float grad = sqrtf(xGradient * xGradient + yGradient * yGradient);
+        }
+        float grad = sqrtf(xGradient * xGradient + yGradient * yGradient);
 
-            gradientTemp[i * PITCH + j] = grad;
-            maxGradient = std::max(grad, maxGradient);
+        gradientTemp[i * PITCH + j] = grad;
+        maxGradient = std::max(grad, maxGradient);
 
-            direction[i * PITCH + j] = atan2f(yGradient, xGradient) * 180.f / M_PI;
-            if (direction[i * PITCH + j] < 0) {
-                direction[i * PITCH + j] += 180.f;
-            }
+        direction[i * PITCH + j] = atan2f(yGradient, xGradient) * 180.f / M_PI;
+        if (direction[i * PITCH + j] < 0) {
+            direction[i * PITCH + j] += 180.f;
+        }
+        if (iter.shouldCommunicate()) {
+            recvBlocks(src, PARTITION.neighborCount, TAG_OUTPUT_STEP1);
         }
     }
     float maxGradientToSend = maxGradient;
@@ -558,7 +563,6 @@ void start(int argc, char* argv[]){
         }
         sendBlock(PARTITION.neigbhors[i], TAG_OUTPUT_STEP1);
     }
-    recvBlocks(dst, PARTITION.neighborCount, TAG_OUTPUT_STEP1);
 
     if(stage == 1){
         printf("stage 1: elapsed time for proc %d: %f\n", PROCID, MPI_Wtime() - startTime);
