@@ -49,6 +49,11 @@ int TAG_OUTPUT_FINAL = 1005;
 double startTime;
 double endTime;
 
+const char* filepath = "";
+int stage = 0;
+bool useGaussian = false;
+bool isOptimized = false;
+
 PartitionInfo PARTITION;
 PartitionInfo *PARTITIONS = NULL;
 
@@ -203,49 +208,35 @@ float* getGaussianFilterKernel(int diameter, float sigma) {
     return filter;
 }
 
-/*
-Iterator class (PARTITION, which cell to start (2))
-state current index
-next(): change index from left - right, then top to bottom, ij 
-
-we are doing 3x3 convolution
-(1,1), (1,2) (1,3), (1,4)
-(2,1), (2,2)
-
-
-(0,0)(0,1)(0,2)(0,3) ... (0,5)
-(1,0)(1,5)
-(2,0)(2,5)
-*/
-
 void applyGaussianFilter(BYTE *src, BYTE *dst, int diameter, float *filter) {
     int half = diameter / 2;
-    for (int i = PARTITION.topPixel; i <= PARTITION.bottomPixel; i++) {
-        for (int j = PARTITION.leftPixel; j <= PARTITION.rightPixel; j++) {
-            float iFiltered = 0;
-            int neighbor_i = 0;
-            int neighbor_j = 0;
+    GridIterator iter(PARTITION, 0, PROCID);
+    for (std::pair<int,int> ij = iter.next(); ij.first != -1; ij = iter.next()) {
+        int i = ij.first;
+        int j = ij.second;
+        float iFiltered = 0;
+        int neighbor_i = 0;
+        int neighbor_j = 0;
 
-            for (int ii = 0; ii < diameter; ii++) {
-                for (int jj = 0; jj < diameter; jj++) {
-                    neighbor_i = i - (half - ii);
-                    neighbor_j = j - (half - jj);
-                    if (neighbor_i < 0) {
-                        neighbor_i += diameter + 1;
-                    } else if (neighbor_i >= HEIGHT) {
-                        neighbor_i -= diameter + 1;
-                    }
-                    if (neighbor_j < 0) {
-                        neighbor_j += diameter + 1;
-                    } else if (neighbor_j >= WIDTH) {
-                        neighbor_j -= diameter + 1;
-                    }
-
-                    iFiltered += src[neighbor_i * PITCH + neighbor_j] * filter[ii * diameter + jj];
+        for (int ii = 0; ii < diameter; ii++) {
+            for (int jj = 0; jj < diameter; jj++) {
+                neighbor_i = i - (half - ii);
+                neighbor_j = j - (half - jj);
+                if (neighbor_i < 0) {
+                    neighbor_i += diameter + 1;
+                } else if (neighbor_i >= HEIGHT) {
+                    neighbor_i -= diameter + 1;
                 }
+                if (neighbor_j < 0) {
+                    neighbor_j += diameter + 1;
+                } else if (neighbor_j >= WIDTH) {
+                    neighbor_j -= diameter + 1;
+                }
+
+                iFiltered += src[neighbor_i * PITCH + neighbor_j] * filter[ii * diameter + jj];
             }
-            dst[i * PITCH + j] = iFiltered;
         }
+        dst[i * PITCH + j] = iFiltered;
     }
 }
 
@@ -260,7 +251,7 @@ float gaussian(float x, double sigma) {
 
 void applyBilateralFilter(BYTE *src, BYTE *dst, int diameter, float sigmaI, float sigmaS) {
     int half = diameter / 2;
-    GridIterator iter(PARTITION, 5, PROCID);
+    GridIterator iter(PARTITION, 0, PROCID);
     for (std::pair<int,int> ij = iter.next(); ij.first != -1; ij = iter.next()) {
         int i = ij.first;
         int j = ij.second;
@@ -302,12 +293,15 @@ void applySobelFilter(BYTE *src, BYTE *gradient, float *direction) {
     int yFilter[3][3] = {{1, 2, 1}, {0, 0, 0}, {-1, -2, -1}};
     float maxGradient = 0.f;
     float *gradientTemp = new float[PITCH * HEIGHT];
-    GridIterator iter(PARTITION, 1, PROCID);
+    GridIterator iter(PARTITION, isOptimized ? 1 : 0, PROCID);
+    if (!isOptimized) {
+        recvBlocks(src, PARTITION.neighborCount, TAG_OUTPUT_STEP1);
+    }
     for (std::pair<int,int> ij = iter.next(); ij.first != -1; ij = iter.next()) {
         int i = ij.first;
         int j = ij.second;
         if (i == 0 || i == HEIGHT - 1 || j == 0 || j == WIDTH - 1) {
-            if (iter.shouldCommunicate()) {
+            if (isOptimized && iter.shouldCommunicate()) {
                 recvBlocks(src, PARTITION.neighborCount, TAG_OUTPUT_STEP1);
             }
             continue;
@@ -331,7 +325,7 @@ void applySobelFilter(BYTE *src, BYTE *gradient, float *direction) {
         if (direction[i * PITCH + j] < 0) {
             direction[i * PITCH + j] += 180.f;
         }
-        if (iter.shouldCommunicate()) {
+        if (isOptimized && iter.shouldCommunicate()) {
             recvBlocks(src, PARTITION.neighborCount, TAG_OUTPUT_STEP1);
         }
     }
@@ -346,32 +340,45 @@ void applySobelFilter(BYTE *src, BYTE *gradient, float *direction) {
 }
 
 void applyNonMaxSuppression(BYTE *src, BYTE *dst, float *direction) {
-    for (int i = PARTITION.topPixel; i <= PARTITION.bottomPixel; i++) {
-        for (int j = PARTITION.leftPixel; j <= PARTITION.rightPixel; j++) {
-            if (i == 0 || i == HEIGHT - 1 || j == 0 || j == WIDTH - 1) {
-                continue;
+    GridIterator iter(PARTITION, isOptimized ? 1 : 0, PROCID);
+    if (!isOptimized) {
+        recvBlocks(src, PARTITION.neighborCount, TAG_OUTPUT_STEP2);
+        recvBlocksFloat(direction, PARTITION.neighborCount, TAG_OUTPUT_STEP2_DIRECTION);
+    }
+    for (std::pair<int,int> ij = iter.next(); ij.first != -1; ij = iter.next()) {
+        int i = ij.first;
+        int j = ij.second;
+        if (i == 0 || i == HEIGHT - 1 || j == 0 || j == WIDTH - 1) {
+            if (isOptimized && iter.shouldCommunicate()) {
+                recvBlocks(src, PARTITION.neighborCount, TAG_OUTPUT_STEP2);
+                recvBlocksFloat(direction, PARTITION.neighborCount, TAG_OUTPUT_STEP2_DIRECTION);
             }
-            int q = 255;
-            int r = 255;
+            continue;
+        }
+        int q = 255;
+        int r = 255;
 
-            if ((0 <= direction[i * PITCH + j] && direction[i * PITCH + j] < 22.5) || (157.5 <= direction[i * PITCH + j] && direction[i * PITCH + j] <= 180)) {
-                q = src[i * PITCH + j + 1];
-                r = src[i * PITCH + j - 1];
-            } else if (22.5 <= direction[i * PITCH + j] && direction[i * PITCH + j] < 67.5) {
-                q = src[(i + 1) * PITCH + j - 1];
-                r = src[(i - 1) * PITCH + j + 1];
-            } else if (67.5 <= direction[i * PITCH + j] && direction[i * PITCH + j] < 112.5) {
-                q = src[(i + 1) * PITCH + j];
-                r = src[(i - 1) * PITCH + j];
-            } else if (112.5 <= direction[i * PITCH + j] && direction[i * PITCH + j] < 157.5) {
-                q = src[(i - 1) * PITCH + j - 1];
-                r = src[(i + 1) * PITCH + j + 1];
-            }
-            if ((src[i * PITCH + j] >= q) && (src[i * PITCH + j] >= r)) {
-                dst[i * PITCH + j] = src[i * PITCH + j];
-            } else {
-                dst[i * PITCH + j] = 0;
-            }
+        if ((0 <= direction[i * PITCH + j] && direction[i * PITCH + j] < 22.5) || (157.5 <= direction[i * PITCH + j] && direction[i * PITCH + j] <= 180)) {
+            q = src[i * PITCH + j + 1];
+            r = src[i * PITCH + j - 1];
+        } else if (22.5 <= direction[i * PITCH + j] && direction[i * PITCH + j] < 67.5) {
+            q = src[(i + 1) * PITCH + j - 1];
+            r = src[(i - 1) * PITCH + j + 1];
+        } else if (67.5 <= direction[i * PITCH + j] && direction[i * PITCH + j] < 112.5) {
+            q = src[(i + 1) * PITCH + j];
+            r = src[(i - 1) * PITCH + j];
+        } else if (112.5 <= direction[i * PITCH + j] && direction[i * PITCH + j] < 157.5) {
+            q = src[(i - 1) * PITCH + j - 1];
+            r = src[(i + 1) * PITCH + j + 1];
+        }
+        if ((src[i * PITCH + j] >= q) && (src[i * PITCH + j] >= r)) {
+            dst[i * PITCH + j] = src[i * PITCH + j];
+        } else {
+            dst[i * PITCH + j] = 0;
+        }
+        if (isOptimized && iter.shouldCommunicate()) {
+            recvBlocks(src, PARTITION.neighborCount, TAG_OUTPUT_STEP2);
+            recvBlocksFloat(direction, PARTITION.neighborCount, TAG_OUTPUT_STEP2_DIRECTION);
         }
     }
 }
@@ -402,30 +409,47 @@ void applyThreshold(BYTE *image) {
             if (i == 0 || i == HEIGHT - 1 || j == 0 || j == WIDTH - 1) {
                 continue;
             }
-            if (image[i * PITCH + j] >= highThreshold) {
-                image[i * PITCH + j] = STRONG;
-            } else if (image[i * PITCH + j] >= lowThreshold) {
-                image[i * PITCH + j] = WEAK;
+            int center = i * PITCH + j;
+            if (image[center] >= highThreshold) {
+                image[center] = STRONG;
+            } else if (image[center] >= lowThreshold) {
+                image[center] = WEAK;
             } else {
-                image[i * PITCH + j] = 0;
+                image[center] = 0;
             }
         }
     }
 }
 
 void applyHysteresis(BYTE *image) {
-    for (int i = 1; i < HEIGHT - 1; i++) {
-        for (int j = 1; j < WIDTH - 1; j++) {
-            if (image[i * PITCH+ j] == WEAK) {
-                if ((image[(i + 1) * PITCH + j - 1] == STRONG) || (image[(i + 1) * PITCH + j] == STRONG) 
-                || (image[(i + 1) * PITCH + j + 1] == STRONG) || (image[i * PITCH + j - 1] == STRONG) 
-                || (image[i * PITCH + j + 1] == STRONG) || (image[(i - 1) * PITCH + j - 1] == STRONG) 
-                || (image[(i - 1) * PITCH + j] == STRONG) || (image[(i - 1) * PITCH + j + 1] == STRONG)) {
-                    image[i* PITCH+ j] = STRONG;
-                } else {
-                    image[i* PITCH+ j] = 0;
-                }
+    GridIterator iter(PARTITION, isOptimized ? 1 : 0, PROCID);
+    if (!isOptimized) {
+        recvBlocks(image, PARTITION.neighborCount, TAG_OUTPUT_STEP4);
+    }
+    for (std::pair<int,int> ij = iter.next(); ij.first != -1; ij = iter.next()) {
+        int i = ij.first;
+        int j = ij.second;
+        if (i == 0 || i == HEIGHT - 1 || j == 0 || j == WIDTH - 1) {
+            if (isOptimized && iter.shouldCommunicate()) {
+                recvBlocks(image, PARTITION.neighborCount, TAG_OUTPUT_STEP4);
             }
+            continue;
+        }
+        int bottom = (i + 1) * PITCH + j;
+        int center = i * PITCH + j;
+        int top = (i - 1) * PITCH + j;
+        if (image[center] == WEAK) {
+            if ((image[bottom - 1] == STRONG) || (image[bottom] == STRONG) 
+            || (image[bottom + 1] == STRONG) || (image[center - 1] == STRONG) 
+            || (image[center + 1] == STRONG) || (image[top - 1] == STRONG) 
+            || (image[top] == STRONG) || (image[top + 1] == STRONG)) {
+                image[center] = STRONG;
+            } else {
+                image[center] = 0;
+            }
+        }
+        if (isOptimized && iter.shouldCommunicate()) {
+            recvBlocks(image, PARTITION.neighborCount, TAG_OUTPUT_STEP4);
         }
     }
 }
@@ -457,31 +481,7 @@ void aggregateOutputAndSaveImage(const char *filepath, BYTE *dst, const char *st
     }
 }
 
-void start(int argc, char* argv[]){
-    const char* filepath = "";
-    int stage = 0;
-    int ch = 0;
-    bool useGaussian = 0;
-    if (argc < 3) {
-        std::cout << "Usage: mpirun -n <# of cores> ./main -f <image file>" << std::endl;
-        exit(-1);
-    }
-    while ((ch = getopt(argc, argv, "f:s:g")) != -1)
-    {
-        switch (ch)
-        {
-            case 'f':
-                filepath = optarg;
-                break;
-            case 's':
-                stage = atoi(optarg);
-                break;
-            case 'g':
-                useGaussian = 1;
-                break;
-        }
-    }
-
+void start(){
     FIBITMAP *image = NULL;
     int info[4];
     if (PROCID == 0) {
@@ -589,8 +589,6 @@ void start(int argc, char* argv[]){
         sendBlock(PARTITION.neigbhors[i], TAG_OUTPUT_STEP2);
         sendBlockFloat(PARTITION.neigbhors[i], TAG_OUTPUT_STEP2_DIRECTION);
     }
-    recvBlocks(dst, PARTITION.neighborCount, TAG_OUTPUT_STEP2);
-    recvBlocksFloat(direction, PARTITION.neighborCount, TAG_OUTPUT_STEP2_DIRECTION);
 
     if(stage == 2){
         printf("stage 2: elapsed time for proc %d: %f\n", PROCID, MPI_Wtime() - startTime);
@@ -624,7 +622,6 @@ void start(int argc, char* argv[]){
         }
         sendBlock(PARTITION.neigbhors[i], TAG_OUTPUT_STEP4);
     }
-    recvBlocks(dst, PARTITION.neighborCount, TAG_OUTPUT_STEP4);
 
     applyHysteresis(dst);
 
@@ -649,7 +646,31 @@ int main(int argc, char* argv[]) {
     // Run computation
     PROCID = procID;
     NPROC = nproc;
-    start(argc, argv);
+
+    if (argc < 3) {
+        std::cout << "Usage: mpirun -n <# of cores> ./main -f <image file>" << std::endl;
+        exit(-1);
+    }
+    int ch = 0;
+    while ((ch = getopt(argc, argv, "f:s:go")) != -1)
+    {
+        switch (ch)
+        {
+            case 'f':
+                filepath = optarg;
+                break;
+            case 's':
+                stage = atoi(optarg);
+                break;
+            case 'g':
+                useGaussian = true;
+                break;
+            case 'o':
+                isOptimized = true;
+                break;
+        }
+    }
+    start();
     
 
     // Compute running time

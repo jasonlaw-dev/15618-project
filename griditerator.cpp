@@ -20,7 +20,7 @@ GridIterator::GridIterator(PartitionInfo partition, int borderWidth, int PROCID)
     if (partition.neigbhors[5] == -1) {
         innerRightPixel = partition.rightPixel;
     }
-    std::cout << "top: " <<  innerTopPixel << " bottom: "<< innerBottomPixel << " left: " << innerLeftPixel << " right: " << innerRightPixel << std::endl;
+    // std::cout << "top: " <<  innerTopPixel << " bottom: "<< innerBottomPixel << " left: " << innerLeftPixel << " right: " << innerRightPixel << std::endl;
     i = innerTopPixel;
     j = innerLeftPixel;
 }
