@@ -129,18 +129,98 @@ PartitionInfo *getPartition(int procId) {
     return partition;
 }
 
+void getCommunicationInfo(int *info, PartitionInfo partition, int radius, int direction) {
+    int width = 0;
+    int height = 0;
+    switch(direction) {
+        case 0:
+        case 2:
+        case 6:
+        case 8:
+            width = height = radius;
+            break;
+        case 1:
+        case 7:
+            width = partition.rightPixel - partition.leftPixel + 1;
+            height = radius;
+            break;
+        case 3:
+        case 5:
+            width = radius;
+            height = partition.bottomPixel - partition.topPixel + 1;
+            break;
+    }
+    int startI = 0;
+    int startJ = 0;
+    switch(direction) {
+        case 0:
+            startI = 0;
+            startJ = 0;
+            break;
+        case 2:
+            startI = 0;
+            startJ = partition.rightPixel - partition.leftPixel + 1 - radius;
+            break;
+        case 6:
+            startI = partition.bottomPixel - partition.topPixel + 1 - radius;
+            startJ = 0;
+            break;
+        case 8:
+            startI = partition.bottomPixel - partition.topPixel + 1 - radius;
+            startJ = partition.rightPixel - partition.leftPixel + 1 - radius;
+            break;
+        case 1:
+            startI = 0;
+            startJ = 0;
+            break;
+        case 7:
+            startI = partition.bottomPixel - partition.topPixel + 1 - radius;
+            startJ = 0;
+            break;
+        case 3:
+            startI = 0;
+            startJ = 0;
+            break;
+        case 5:
+            startI = 0;
+            startJ = partition.rightPixel - partition.leftPixel + 1 - radius;
+            break;
+    }
+    info[0] = width;
+    info[1] = height;
+    info[2] = startI;
+    info[3] = startJ;
+}
+
 template <typename T>
-void sendBlock(T *buffer, MPI_Datatype type, int dest, int tag) {
+void sendBlock(T *buffer, MPI_Datatype type, int dest, int tag, int radius, int direction) {
     MPI_Request *request = new MPI_Request;
-    MPI_Isend(buffer, BLOCK_WIDTH * BLOCK_HEIGHT, type, dest, tag, MPI_COMM_WORLD, request);
+    if (radius == 0) {
+        MPI_Isend(buffer, BLOCK_WIDTH * BLOCK_HEIGHT, type, dest, tag, MPI_COMM_WORLD, request);
+    } else {
+        int info[4];
+        getCommunicationInfo(info, PARTITION, radius, direction);
+        int width = info[0];
+        int height = info[1];
+        int startI = info[2];
+        int startJ = info[3];
+        int k = 0;
+        T *bufferToSend = new T[width * height];
+        for (int i = startI; i < startI + height; i++) {
+            for (int j = startJ; j < startJ + width; j++) {
+                bufferToSend[k++] = buffer[i * BLOCK_WIDTH + j];
+            }
+        }
+        MPI_Isend(bufferToSend, width * height, type, dest, tag, MPI_COMM_WORLD, request);
+    }
 }
 
-void sendBlockByte(int dest, int tag) {
-    sendBlock<BYTE>(OUTPUT_BUFFER, MPI_BYTE, dest, tag);
+void sendBlockByte(int dest, int tag, int radius = 0, int direction = -1) {
+    sendBlock<BYTE>(OUTPUT_BUFFER, MPI_BYTE, dest, tag, radius, direction);
 }
 
-void sendBlockFloat(int dest, int tag) {
-    sendBlock<float>(OUTPUT_BUFFER_FLOAT, MPI_FLOAT, dest, tag);
+void sendBlockFloat(int dest, int tag, int radius = 0, int direction = -1) {
+    sendBlock<float>(OUTPUT_BUFFER_FLOAT, MPI_FLOAT, dest, tag, radius, direction);
 }
 
 template <typename T>
@@ -158,30 +238,47 @@ void copyBlockToBufferFloat(float *image) {
     copyBlockToBuffer<float>(image, OUTPUT_BUFFER_FLOAT);
 }
 
-void recvBlocks(BYTE *image, int recvCount, int tag) {
+template <typename T>
+void recvBlocks(T *image, T *buffer, MPI_Datatype type, int recvCount, int tag, int radius) {
+    MPI_Status *status = new MPI_Status;
     for (; recvCount > 0; recvCount--) {
-        MPI_Status *status = new MPI_Status;
-        MPI_Recv(INPUT_BUFFER, BLOCK_WIDTH * BLOCK_HEIGHT, MPI_BYTE, MPI_ANY_SOURCE, tag, MPI_COMM_WORLD, status);
+        MPI_Recv(buffer, BLOCK_WIDTH * BLOCK_HEIGHT, type, MPI_ANY_SOURCE, tag, MPI_COMM_WORLD, status);
         int source = status->MPI_SOURCE;
-        for (int i = PARTITIONS[source].topPixel; i <= PARTITIONS[source].bottomPixel; i++) {
-            BYTE *bufferStart = INPUT_BUFFER + (i - PARTITIONS[source].topPixel) * BLOCK_WIDTH;
-            BYTE *bufferEnd = bufferStart + BLOCK_WIDTH;
-            std::copy(bufferStart, bufferEnd, image + i * PITCH + PARTITIONS[source].leftPixel);
+        if (radius == 0) {
+            for (int i = PARTITIONS[source].topPixel; i <= PARTITIONS[source].bottomPixel; i++) {
+                T *bufferStart = buffer + (i - PARTITIONS[source].topPixel) * BLOCK_WIDTH;
+                T *bufferEnd = bufferStart + BLOCK_WIDTH;
+                std::copy(bufferStart, bufferEnd, image + i * PITCH + PARTITIONS[source].leftPixel);
+            }    
+        } else {
+            int direction;
+            for (direction = 0; direction < 9; direction++) {
+                if (PARTITIONS[source].neigbhors[direction] == PROCID) {
+                    break;
+                }
+            }
+            int info[4];
+            getCommunicationInfo(info, PARTITIONS[source], radius, direction);
+            int width = info[0];
+            int height = info[1];
+            int startI = info[2];
+            int startJ = info[3];
+            int k = 0;
+            for (int i = startI; i < startI + height; i++) {
+                for (int j = startJ; j < startJ + width; j++) {
+                    image[(PARTITIONS[source].topPixel + i) * PITCH + PARTITIONS[source].leftPixel + j] = buffer[k++];
+                }
+            }
         }
     }
 }
 
-void recvBlocksFloat(float *image, int recvCount, int tag) {
-    for (; recvCount > 0; recvCount--) {
-        MPI_Status *status = new MPI_Status;
-        MPI_Recv(INPUT_BUFFER_FLOAT, BLOCK_WIDTH * BLOCK_HEIGHT, MPI_FLOAT, MPI_ANY_SOURCE, tag, MPI_COMM_WORLD, status);
-        int source = status->MPI_SOURCE;
-        for (int i = PARTITIONS[source].topPixel; i <= PARTITIONS[source].bottomPixel; i++) {
-            float *bufferStart = INPUT_BUFFER_FLOAT + (i - PARTITIONS[source].topPixel) * BLOCK_WIDTH;
-            float *bufferEnd = bufferStart + BLOCK_WIDTH;
-            std::copy(bufferStart, bufferEnd, image + i * PITCH + PARTITIONS[source].leftPixel);
-        }
-    }
+void recvBlocksByte(BYTE *image, int recvCount, int tag, int radius = 0) {
+    recvBlocks<BYTE>(image, INPUT_BUFFER, MPI_BYTE, recvCount, tag, radius);
+}
+
+void recvBlocksFloat(float *image, int recvCount, int tag, int radius = 0) {
+    recvBlocks<float>(image, INPUT_BUFFER_FLOAT, MPI_FLOAT, recvCount, tag, radius);
 }
 
 // https://github.com/aekanman/gaussian-blur/blob/master/helper.cpp
@@ -293,14 +390,14 @@ void applySobelFilter(BYTE *src, BYTE *gradient, float *direction) {
     float *gradientTemp = new float[PITCH * HEIGHT];
     GridIterator iter(PARTITION, isOptimized ? 1 : 0, PROCID);
     if (!isOptimized) {
-        recvBlocks(src, PARTITION.neighborCount, TAG_OUTPUT_STEP1);
+        recvBlocksByte(src, PARTITION.neighborCount, TAG_OUTPUT_STEP1);
     }
     for (std::pair<int,int> ij = iter.next(); ij.first != -1; ij = iter.next()) {
         int i = ij.first;
         int j = ij.second;
         if (i == 0 || i == HEIGHT - 1 || j == 0 || j == WIDTH - 1) {
             if (isOptimized && iter.shouldCommunicate()) {
-                recvBlocks(src, PARTITION.neighborCount, TAG_OUTPUT_STEP1);
+                recvBlocksByte(src, PARTITION.neighborCount, TAG_OUTPUT_STEP1, 1);
             }
             continue;
         }
@@ -324,7 +421,7 @@ void applySobelFilter(BYTE *src, BYTE *gradient, float *direction) {
             direction[i * PITCH + j] += 180.f;
         }
         if (isOptimized && iter.shouldCommunicate()) {
-            recvBlocks(src, PARTITION.neighborCount, TAG_OUTPUT_STEP1);
+            recvBlocksByte(src, PARTITION.neighborCount, TAG_OUTPUT_STEP1, 1);
         }
     }
     float maxGradientToSend = maxGradient;
@@ -340,7 +437,7 @@ void applySobelFilter(BYTE *src, BYTE *gradient, float *direction) {
 void applyNonMaxSuppression(BYTE *src, BYTE *dst, float *direction) {
     GridIterator iter(PARTITION, isOptimized ? 1 : 0, PROCID);
     if (!isOptimized) {
-        recvBlocks(src, PARTITION.neighborCount, TAG_OUTPUT_STEP2);
+        recvBlocksByte(src, PARTITION.neighborCount, TAG_OUTPUT_STEP2);
         recvBlocksFloat(direction, PARTITION.neighborCount, TAG_OUTPUT_STEP2_DIRECTION);
     }
     for (std::pair<int,int> ij = iter.next(); ij.first != -1; ij = iter.next()) {
@@ -348,8 +445,8 @@ void applyNonMaxSuppression(BYTE *src, BYTE *dst, float *direction) {
         int j = ij.second;
         if (i == 0 || i == HEIGHT - 1 || j == 0 || j == WIDTH - 1) {
             if (isOptimized && iter.shouldCommunicate()) {
-                recvBlocks(src, PARTITION.neighborCount, TAG_OUTPUT_STEP2);
-                recvBlocksFloat(direction, PARTITION.neighborCount, TAG_OUTPUT_STEP2_DIRECTION);
+                recvBlocksByte(src, PARTITION.neighborCount, TAG_OUTPUT_STEP2, 1);
+                recvBlocksFloat(direction, PARTITION.neighborCount, TAG_OUTPUT_STEP2_DIRECTION, 1);
             }
             continue;
         }
@@ -375,8 +472,8 @@ void applyNonMaxSuppression(BYTE *src, BYTE *dst, float *direction) {
             dst[i * PITCH + j] = 0;
         }
         if (isOptimized && iter.shouldCommunicate()) {
-            recvBlocks(src, PARTITION.neighborCount, TAG_OUTPUT_STEP2);
-            recvBlocksFloat(direction, PARTITION.neighborCount, TAG_OUTPUT_STEP2_DIRECTION);
+            recvBlocksByte(src, PARTITION.neighborCount, TAG_OUTPUT_STEP2, 1);
+            recvBlocksFloat(direction, PARTITION.neighborCount, TAG_OUTPUT_STEP2_DIRECTION, 1);
         }
     }
 }
@@ -422,14 +519,14 @@ void applyThreshold(BYTE *image) {
 void applyHysteresis(BYTE *image) {
     GridIterator iter(PARTITION, isOptimized ? 1 : 0, PROCID);
     if (!isOptimized) {
-        recvBlocks(image, PARTITION.neighborCount, TAG_OUTPUT_STEP4);
+        recvBlocksByte(image, PARTITION.neighborCount, TAG_OUTPUT_STEP4);
     }
     for (std::pair<int,int> ij = iter.next(); ij.first != -1; ij = iter.next()) {
         int i = ij.first;
         int j = ij.second;
         if (i == 0 || i == HEIGHT - 1 || j == 0 || j == WIDTH - 1) {
             if (isOptimized && iter.shouldCommunicate()) {
-                recvBlocks(image, PARTITION.neighborCount, TAG_OUTPUT_STEP4);
+                recvBlocksByte(image, PARTITION.neighborCount, TAG_OUTPUT_STEP4, 1);
             }
             continue;
         }
@@ -447,7 +544,7 @@ void applyHysteresis(BYTE *image) {
             }
         }
         if (isOptimized && iter.shouldCommunicate()) {
-            recvBlocks(image, PARTITION.neighborCount, TAG_OUTPUT_STEP4);
+            recvBlocksByte(image, PARTITION.neighborCount, TAG_OUTPUT_STEP4, 1);
         }
     }
 }
@@ -474,7 +571,7 @@ void aggregateOutputAndSaveImage(const char *filepath, BYTE *dst, const char *st
         copyBlockToBufferByte(dst);
         sendBlockByte(0, TAG_OUTPUT_FINAL);
     } else {
-        recvBlocks(dst, NPROC - 1, TAG_OUTPUT_FINAL);
+        recvBlocksByte(dst, NPROC - 1, TAG_OUTPUT_FINAL);
         saveImage(filepath, dst, stageName);
     }
 }
@@ -545,21 +642,26 @@ void start(){
     startTime = MPI_Wtime();
     
     MPI_Bcast(src, PITCH * HEIGHT, MPI_BYTE, 0, MPI_COMM_WORLD);
-
+    
+    int blurDiameter;
     if(useGaussian){
-        int diameter = 15;
-        float *gaussianFilter = getGaussianFilterKernel(diameter, 2.f);
-        applyGaussianFilter(src, dst, diameter, gaussianFilter);
+        blurDiameter = 15;
+        float *gaussianFilter = getGaussianFilterKernel(blurDiameter, 2.f);
+        applyGaussianFilter(src, dst, blurDiameter, gaussianFilter);
     } else {
+        blurDiameter = 9;
         applyBilateralFilter(src, dst, 9, 30.f, 20.f);
     }
-
     copyBlockToBufferByte(dst);
     for (int i = 0; i < 9; i++) {
         if (PARTITION.neigbhors[i] == -1) {
             continue;
         }
-        sendBlockByte(PARTITION.neigbhors[i], TAG_OUTPUT_STEP1);
+        if (isOptimized) {
+            sendBlockByte(PARTITION.neigbhors[i], TAG_OUTPUT_STEP1, 1, i);
+        } else {
+            sendBlockByte(PARTITION.neigbhors[i], TAG_OUTPUT_STEP1);
+        }
     }
 
     if(stage == 1){
@@ -584,8 +686,13 @@ void start(){
         if (PARTITION.neigbhors[i] == -1) {
             continue;
         }
-        sendBlockByte(PARTITION.neigbhors[i], TAG_OUTPUT_STEP2);
-        sendBlockFloat(PARTITION.neigbhors[i], TAG_OUTPUT_STEP2_DIRECTION);
+        if (isOptimized) {
+            sendBlockByte(PARTITION.neigbhors[i], TAG_OUTPUT_STEP2, 1, i);
+            sendBlockFloat(PARTITION.neigbhors[i], TAG_OUTPUT_STEP2_DIRECTION, 1, i);    
+        } else {
+            sendBlockByte(PARTITION.neigbhors[i], TAG_OUTPUT_STEP2);
+            sendBlockFloat(PARTITION.neigbhors[i], TAG_OUTPUT_STEP2_DIRECTION);
+        }
     }
 
     if(stage == 2){
@@ -618,7 +725,11 @@ void start(){
         if (PARTITION.neigbhors[i] == -1) {
             continue;
         }
-        sendBlockByte(PARTITION.neigbhors[i], TAG_OUTPUT_STEP4);
+        if (isOptimized) {
+            sendBlockByte(PARTITION.neigbhors[i], TAG_OUTPUT_STEP4, 1, i);
+        } else {
+            sendBlockByte(PARTITION.neigbhors[i], TAG_OUTPUT_STEP4);
+        }
     }
 
     applyHysteresis(dst);
