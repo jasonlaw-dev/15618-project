@@ -126,38 +126,36 @@ PartitionInfo *getPartition(int procId) {
             }
         }
     }
-
-    // printf("NPROC: %d\n", NPROC);
-    // printf("PROCID: %d\n", procId);
-    // for (int i = 0; i < 3; i++) {
-    //     for (int j = 0; j < 3; j++) {
-    //         printf("%d\t", partition->neigbhors[i*3+j]);
-    //     }
-    //     printf("\n");
-    // }
-
     return partition;
 }
 
-void sendBlock(int dest, int tag) {
+template <typename T>
+void sendBlock(T *buffer, MPI_Datatype type, int dest, int tag) {
     MPI_Request *request = new MPI_Request;
-    MPI_Isend(OUTPUT_BUFFER, BLOCK_WIDTH * BLOCK_HEIGHT, MPI_BYTE, dest, tag, MPI_COMM_WORLD, request);
+    MPI_Isend(buffer, BLOCK_WIDTH * BLOCK_HEIGHT, type, dest, tag, MPI_COMM_WORLD, request);
+}
+
+void sendBlockByte(int dest, int tag) {
+    sendBlock<BYTE>(OUTPUT_BUFFER, MPI_BYTE, dest, tag);
 }
 
 void sendBlockFloat(int dest, int tag) {
-    MPI_Request *request = new MPI_Request;
-    MPI_Isend(OUTPUT_BUFFER_FLOAT, BLOCK_WIDTH * BLOCK_HEIGHT, MPI_FLOAT, dest, tag, MPI_COMM_WORLD, request);
+    sendBlock<float>(OUTPUT_BUFFER_FLOAT, MPI_FLOAT, dest, tag);
 }
 
-void copyBlockToBuffer(BYTE *image) {
+template <typename T>
+void copyBlockToBuffer(T *image, T *buffer) {
     for (int i = PARTITION.topPixel; i <= PARTITION.bottomPixel; i++) {
-        std::copy(image + i * PITCH + PARTITION.leftPixel, image + i * PITCH + PARTITION.rightPixel + 1, OUTPUT_BUFFER + (i - PARTITION.topPixel) * BLOCK_WIDTH);
+        std::copy(image + i * PITCH + PARTITION.leftPixel, image + i * PITCH + PARTITION.rightPixel + 1, buffer + (i - PARTITION.topPixel) * BLOCK_WIDTH);
     }
 }
+
+void copyBlockToBufferByte(BYTE *image) {
+    copyBlockToBuffer<BYTE>(image, OUTPUT_BUFFER);
+}
+
 void copyBlockToBufferFloat(float *image) {
-    for (int i = PARTITION.topPixel; i <= PARTITION.bottomPixel; i++) {
-        std::copy(image + i * PITCH + PARTITION.leftPixel, image + i * PITCH + PARTITION.rightPixel + 1, OUTPUT_BUFFER_FLOAT + (i - PARTITION.topPixel) * BLOCK_WIDTH);
-    }
+    copyBlockToBuffer<float>(image, OUTPUT_BUFFER_FLOAT);
 }
 
 void recvBlocks(BYTE *image, int recvCount, int tag) {
@@ -473,8 +471,8 @@ void saveImage(const char *filepath, BYTE *dst, const char *stageName){
 
 void aggregateOutputAndSaveImage(const char *filepath, BYTE *dst, const char *stageName) {
     if (PROCID != 0) {
-        copyBlockToBuffer(dst);
-        sendBlock(0, TAG_OUTPUT_FINAL);
+        copyBlockToBufferByte(dst);
+        sendBlockByte(0, TAG_OUTPUT_FINAL);
     } else {
         recvBlocks(dst, NPROC - 1, TAG_OUTPUT_FINAL);
         saveImage(filepath, dst, stageName);
@@ -556,12 +554,12 @@ void start(){
         applyBilateralFilter(src, dst, 9, 30.f, 20.f);
     }
 
-    copyBlockToBuffer(dst);
+    copyBlockToBufferByte(dst);
     for (int i = 0; i < 9; i++) {
         if (PARTITION.neigbhors[i] == -1) {
             continue;
         }
-        sendBlock(PARTITION.neigbhors[i], TAG_OUTPUT_STEP1);
+        sendBlockByte(PARTITION.neigbhors[i], TAG_OUTPUT_STEP1);
     }
 
     if(stage == 1){
@@ -580,13 +578,13 @@ void start(){
 
     applySobelFilter(src, dst, direction);
 
-    copyBlockToBuffer(dst);
+    copyBlockToBufferByte(dst);
     copyBlockToBufferFloat(direction);
     for (int i = 0; i < 9; i++) {
         if (PARTITION.neigbhors[i] == -1) {
             continue;
         }
-        sendBlock(PARTITION.neigbhors[i], TAG_OUTPUT_STEP2);
+        sendBlockByte(PARTITION.neigbhors[i], TAG_OUTPUT_STEP2);
         sendBlockFloat(PARTITION.neigbhors[i], TAG_OUTPUT_STEP2_DIRECTION);
     }
 
@@ -615,12 +613,12 @@ void start(){
         return;
     }
 
-    copyBlockToBuffer(dst);
+    copyBlockToBufferByte(dst);
     for (int i = 0; i < 9; i++) {
         if (PARTITION.neigbhors[i] == -1) {
             continue;
         }
-        sendBlock(PARTITION.neigbhors[i], TAG_OUTPUT_STEP4);
+        sendBlockByte(PARTITION.neigbhors[i], TAG_OUTPUT_STEP4);
     }
 
     applyHysteresis(dst);
