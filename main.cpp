@@ -154,35 +154,23 @@ void getCommunicationInfo(int *info, PartitionInfo partition, int radius, int di
     int startJ = 0;
     switch(direction) {
         case 0:
+        case 1:
+        case 3:
             startI = 0;
             startJ = 0;
             break;
         case 2:
+        case 5:
             startI = 0;
             startJ = partition.rightPixel - partition.leftPixel + 1 - radius;
             break;
         case 6:
+        case 7:
             startI = partition.bottomPixel - partition.topPixel + 1 - radius;
             startJ = 0;
             break;
         case 8:
             startI = partition.bottomPixel - partition.topPixel + 1 - radius;
-            startJ = partition.rightPixel - partition.leftPixel + 1 - radius;
-            break;
-        case 1:
-            startI = 0;
-            startJ = 0;
-            break;
-        case 7:
-            startI = partition.bottomPixel - partition.topPixel + 1 - radius;
-            startJ = 0;
-            break;
-        case 3:
-            startI = 0;
-            startJ = 0;
-            break;
-        case 5:
-            startI = 0;
             startJ = partition.rightPixel - partition.leftPixel + 1 - radius;
             break;
     }
