@@ -735,6 +735,7 @@ void start(){
 
     endTime = MPI_Wtime();
 
+    printf("stage 5: elapsed time for proc %d: %f\n", PROCID, MPI_Wtime() - startTime);
     aggregateOutputAndSaveImage(filepath, dst, "-5-hyster");
 }
 
@@ -782,6 +783,5 @@ int main(int argc, char* argv[]) {
     
     // Compute running time
     MPI_Finalize();
-    printf("elapsed time for proc %d: %f\n", procID, endTime - startTime);
     return 0;
 }
