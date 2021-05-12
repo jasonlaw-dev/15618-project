@@ -103,7 +103,6 @@ PartitionInfo *getPartition(int procId) {
 
     /*
         3x3 grid, NPROC = 9, procId = 2 (top right cell)
-
         Neighbors:
         -1      -1      -1
         1       -1      -1
@@ -710,7 +709,7 @@ void start(){
 
     int blurDiameter = 15;
     
-    MPI_Barrier(MPI_COMM_WORLD);
+    MPI_Bcast(src, PITCH * HEIGHT, MPI_BYTE, 0, MPI_COMM_WORLD);
 
     startTime = MPI_Wtime();
     
