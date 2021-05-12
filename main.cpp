@@ -748,6 +748,8 @@ void start(){
         return;
     }
 
+    double startTime2 = MPI_Wtime();
+
     src = dst;
     dst = new BYTE[PITCH * HEIGHT]();
     float *direction = new float[PITCH * HEIGHT];
@@ -770,29 +772,32 @@ void start(){
     }
 
     if(stage == 2){
-        printf("stage 2: elapsed time for proc %d: %f\n", PROCID, MPI_Wtime() - startTime);
+        printf("stage 2: elapsed time for proc %d: %f\n", PROCID, MPI_Wtime() - startTime2);
         aggregateOutputAndSaveImage(filepath, dst, "-2-sobel");
         return;
     }
 
+    double startTime3 = MPI_Wtime();
     src = dst;
     dst = new BYTE[PITCH * HEIGHT]();
 
     applyNonMaxSuppression(src, dst, direction);
 
     if(stage == 3){
-        printf("stage 3: elapsed time for proc %d: %f\n", PROCID, MPI_Wtime() - startTime);
+        printf("stage 3: elapsed time for proc %d: %f\n", PROCID, MPI_Wtime() - startTime3);
         aggregateOutputAndSaveImage(filepath, dst, "-3-nonmax");
         return;
     }
+    double startTime4 = MPI_Wtime();
 
     applyThreshold(dst);
 
     if(stage == 4){
-        printf("stage 4: elapsed time for proc %d: %f\n", PROCID, MPI_Wtime() - startTime);
+        printf("stage 4: elapsed time for proc %d: %f\n", PROCID, MPI_Wtime() - startTime4);
         aggregateOutputAndSaveImage(filepath, dst, "-4-thres");
         return;
     }
+    double startTime5 = MPI_Wtime();
 
     copyBlockToBufferByte(dst);
     for (int i = 0; i < 9; i++) {
@@ -807,9 +812,12 @@ void start(){
     }
 
     applyHysteresis(dst);
-
-    endTime = MPI_Wtime();
-
+    
+    if(stage == 5){
+        printf("stage 5: elapsed time for proc %d: %f\n", PROCID, MPI_Wtime() - startTime5);
+        aggregateOutputAndSaveImage(filepath, dst, "-5-hyster");
+        return;
+    }
     printf("stage 5: elapsed time for proc %d: %f\n", PROCID, MPI_Wtime() - startTime);
     aggregateOutputAndSaveImage(filepath, dst, "-5-hyster");
 }
