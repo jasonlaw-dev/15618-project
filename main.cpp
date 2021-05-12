@@ -526,22 +526,24 @@ void applySobelFilter(BYTE *src, BYTE *gradient, float *direction) {
 
     iter = GridIterator(PARTITION, 0, PROCID);
     float factor = 1.f / maxGradient * 255.f;
-    for (std::pair<int,int> ij = iter.next(); ij.first != -1; ij = iter.next()) {
-        int i = ij.first;
-        int j = ij.second;
-        if (i == 0 || i == HEIGHT - 1 || j == 0 || j == WIDTH - 1) {
-            continue;
+    for (int i = PARTITION.topPixel; i <= PARTITION.bottomPixel; i++) {
+        for (int j = PARTITION.leftPixel; j <= PARTITION.rightPixel; j++) {
+            if (i == 0 || i == HEIGHT - 1 || j == 0 || j == WIDTH - 1) {
+                continue;
+            }
+            gradient[i * PITCH + j] = gradientTemp[i * PITCH + j] * factor;
         }
-        gradient[i * PITCH + j] = gradientTemp[i * PITCH + j] * factor;
     }
 }
 
-void applyNonMaxSuppression(BYTE *src, BYTE *dst, float *direction) {
+void applyNonMaxSuppressionAndThreshold(BYTE *src, BYTE *dst, float *direction, bool applyThreshold = true) {
     GridIterator iter(PARTITION, isOptimized ? 1 : 0, PROCID);
     if (!isOptimized) {
         recvBlocksByte(src, PARTITION.neighborCount, TAG_OUTPUT_STEP2);
         recvBlocksFloat(direction, PARTITION.neighborCount, TAG_OUTPUT_STEP2_DIRECTION);
     }
+    const int highThreshold = 22; // 255 * 0.09f
+    const int lowThreshold = 1; // highThreshold * 0.05f
     for (std::pair<int,int> ij = iter.next(); ij.first != -1; ij = iter.next()) {
         int i = ij.first;
         int j = ij.second;
@@ -570,12 +572,23 @@ void applyNonMaxSuppression(BYTE *src, BYTE *dst, float *direction) {
             q = src[(i - 1) * PITCH + j - 1];
             r = src[(i + 1) * PITCH + j + 1];
         }
-        if ((src[i * PITCH + j] >= q) && (src[i * PITCH + j] >= r)) {
-            dst[i * PITCH + j] = src[i * PITCH + j];
-        } else {
-            dst[i * PITCH + j] = 0;
+        int val = src[i * PITCH + j];
+        if (val >= q && val >= r) {
+            if (applyThreshold) {
+                if (val >= highThreshold) {
+                    dst[i * PITCH + j] = STRONG;
+                } else if (val >= lowThreshold) {
+                    dst[i * PITCH + j] = WEAK;
+                }
+            } else {
+                dst[i * PITCH + j] = val;
+            }
         }
     }
+}
+
+void applyNonMaxSuppression(BYTE *src, BYTE *dst, float *direction) {
+    applyNonMaxSuppressionAndThreshold(src, dst, direction, false);
 }
 
 void applyThreshold(BYTE *image) {
@@ -592,8 +605,6 @@ void applyThreshold(BYTE *image) {
                 image[center] = STRONG;
             } else if (image[center] >= lowThreshold) {
                 image[center] = WEAK;
-            } else {
-                image[center] = 0;
             }
         }
     }
@@ -813,22 +824,27 @@ void start(){
     src = dst;
     dst = new BYTE[PITCH * HEIGHT]();
 
-    applyNonMaxSuppression(src, dst, direction);
+    if (isOptimized) {
+        applyNonMaxSuppressionAndThreshold(src, dst, direction);
+    } else {
+        applyNonMaxSuppression(src, dst, direction);
 
-    if(stage == 3){
-        printf("stage 3: elapsed time for proc %d: %f\n", PROCID, MPI_Wtime() - startTime3);
-        aggregateOutputAndSaveImage(filepath, dst, "-3-nonmax");
-        return;
+        if(stage == 3){
+            printf("stage 3: elapsed time for proc %d: %f\n", PROCID, MPI_Wtime() - startTime3);
+            aggregateOutputAndSaveImage(filepath, dst, "-3-nonmax");
+            return;
+        }
+        double startTime4 = MPI_Wtime();
+
+        applyThreshold(dst);
+
+        if(stage == 4){
+            printf("stage 4: elapsed time for proc %d: %f\n", PROCID, MPI_Wtime() - startTime4);
+            aggregateOutputAndSaveImage(filepath, dst, "-4-thres");
+            return;
+        }
     }
-    double startTime4 = MPI_Wtime();
-
-    applyThreshold(dst);
-
-    if(stage == 4){
-        printf("stage 4: elapsed time for proc %d: %f\n", PROCID, MPI_Wtime() - startTime4);
-        aggregateOutputAndSaveImage(filepath, dst, "-4-thres");
-        return;
-    }
+    
     double startTime5 = MPI_Wtime();
 
     copyBlockToBufferByte(dst, isOptimized ? 1 : 0);
