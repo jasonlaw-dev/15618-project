@@ -43,7 +43,9 @@ std::pair<int, int> GridIterator::next() {
         bool done = false;
         for (; i <= partition.bottomPixel; i++) {
             for (; j <= partition.rightPixel; j++) {
-                if (!(i >= innerTopPixel && i <= innerBottomPixel && j >= innerLeftPixel && j <= innerRightPixel)) {
+                if (i >= innerTopPixel && i <= innerBottomPixel && j >= innerLeftPixel && j <= innerRightPixel) {
+                    j = innerRightPixel;
+                } else {
                     done = true;
                     break;
                 }

@@ -40,6 +40,7 @@ float *OUTPUT_BUFFER_FLOAT = NULL;
 float *INPUT_BUFFER_FLOAT = NULL;
 FREE_IMAGE_FORMAT IMAGE_FORMAT = FIF_UNKNOWN;
 
+int TAG_OUTPUT_INIT = 500;
 int TAG_OUTPUT_STEP0 = 1000;
 int TAG_OUTPUT_STEP1 = 1001;
 int TAG_OUTPUT_STEP2 = 1002;
@@ -130,6 +131,7 @@ PartitionInfo *getPartition(int procId) {
     return partition;
 }
 
+
 void getCommunicationInfo(int *info, PartitionInfo partition, int radius, int direction) {
     int width = 0;
     int height = 0;
@@ -181,6 +183,21 @@ void getCommunicationInfo(int *info, PartitionInfo partition, int radius, int di
     info[3] = startJ;
 }
 
+void getCommunicationInfoForInitialization(int *info, PartitionInfo partition, int radius) {
+    int startI = std::max(partition.topPixel - radius, 0);
+    int endI = std::min(partition.bottomPixel + radius, HEIGHT-1);
+    int startJ = std::max(partition.leftPixel - radius, 0);
+    int endJ = std::min(partition.rightPixel + radius, WIDTH-1);
+
+    int width = endJ - startJ + 1;
+    int height = endI - startI + 1;
+    
+    info[0] = width;
+    info[1] = height;
+    info[2] = startI;
+    info[3] = startJ;
+}
+
 template <typename T>
 void sendBlock(T *buffer, MPI_Datatype type, int dest, int tag, int radius, int direction) {
     MPI_Request *request = new MPI_Request;
@@ -219,11 +236,11 @@ void copyBlockToBuffer(T *image, T *buffer, int radius) {
         }
     } else {
         for (int i = PARTITION.topPixel; i <= PARTITION.bottomPixel; i++) {
-            if (i < PARTITION.topPixel + radius || i >= PARTITION.bottomPixel - radius) {
+            if (i < PARTITION.topPixel + radius || i > PARTITION.bottomPixel - radius) {
                 std::copy(image + i * PITCH + PARTITION.leftPixel, image + i * PITCH + PARTITION.rightPixel + 1, buffer + (i - PARTITION.topPixel) * BLOCK_WIDTH);
             } else {
                 std::copy(image + i * PITCH + PARTITION.leftPixel, image + i * PITCH + PARTITION.leftPixel + radius, buffer + (i - PARTITION.topPixel) * BLOCK_WIDTH);
-                std::copy(image + i * PITCH + PARTITION.rightPixel - radius + 1, image + i * PITCH + PARTITION.rightPixel, buffer + (i - PARTITION.topPixel) * BLOCK_WIDTH + PARTITION.rightPixel - PARTITION.leftPixel - radius);
+                std::copy(image + i * PITCH + PARTITION.rightPixel - radius + 1, image + i * PITCH + PARTITION.rightPixel + 1, buffer + (i - PARTITION.topPixel) * BLOCK_WIDTH + (PARTITION.rightPixel - PARTITION.leftPixel) - radius + 1);
             }
         }
     }
@@ -320,16 +337,44 @@ float* getGaussianFilterKernel1D(int diameter, float sigma) {
 
 void applyGaussianFilter(BYTE *src, BYTE *dst, int diameter, float *filter) {
     int half = diameter / 2;
-    GridIterator iter(PARTITION, 0, PROCID);
-    for (std::pair<int,int> ij = iter.next(); ij.first != -1; ij = iter.next()) {
-        int i = ij.first;
-        int j = ij.second;
-        float iFiltered = 0;
-        int neighbor_i = 0;
-        int neighbor_j = 0;
+    for (int i = PARTITION.topPixel; i <= PARTITION.bottomPixel; i++) {
+        for (int j = PARTITION.leftPixel; j <= PARTITION.rightPixel; j++) {
+            float iFiltered = 0;
+            int neighbor_i = 0;
+            int neighbor_j = 0;
 
-        for (int ii = 0; ii < diameter; ii++) {
-            for (int jj = 0; jj < diameter; jj++) {
+            for (int ii = 0; ii < diameter; ii++) {
+                for (int jj = 0; jj < diameter; jj++) {
+                    neighbor_i = i - (half - ii);
+                    neighbor_j = j - (half - jj);
+                    if (neighbor_i < 0) {
+                        neighbor_i += diameter + 1;
+                    } else if (neighbor_i >= HEIGHT) {
+                        neighbor_i -= diameter + 1;
+                    }
+                    if (neighbor_j < 0) {
+                        neighbor_j += diameter + 1;
+                    } else if (neighbor_j >= WIDTH) {
+                        neighbor_j -= diameter + 1;
+                    }
+
+                    iFiltered += src[neighbor_i * PITCH + neighbor_j] * filter[ii * diameter + jj];
+                }
+            }
+            dst[i * PITCH + j] = iFiltered;
+        }
+    }
+}
+void applyGaussianFilterTwoPass(BYTE *src, BYTE *dst, BYTE *temp, int diameter, float *filter) {
+    int half = diameter / 2;
+    for (int i = PARTITION.topPixel; i <= PARTITION.bottomPixel; i++) {
+        for (int j = PARTITION.leftPixel; j <= PARTITION.rightPixel; j++) {
+            float iFiltered = 0;
+            int neighbor_i = 0;
+            int neighbor_j = 0;
+
+            for (int ii = 0; ii < diameter; ii++) {
+                int jj = half;
                 neighbor_i = i - (half - ii);
                 neighbor_j = j - (half - jj);
                 if (neighbor_i < 0) {
@@ -343,61 +388,26 @@ void applyGaussianFilter(BYTE *src, BYTE *dst, int diameter, float *filter) {
                     neighbor_j -= diameter + 1;
                 }
 
-                iFiltered += src[neighbor_i * PITCH + neighbor_j] * filter[ii * diameter + jj];
+                iFiltered += src[neighbor_i * PITCH + neighbor_j] * filter[ii];
             }
+            temp[i * PITCH + j] = iFiltered;
         }
-        dst[i * PITCH + j] = iFiltered;
     }
-}
-void applyGaussianFilterTwoPass(BYTE *src, BYTE *dst, BYTE *temp, int diameter, float *filter) {
-    int half = diameter / 2;
-    GridIterator iter(PARTITION, 0, PROCID);
-    for (std::pair<int,int> ij = iter.next(); ij.first != -1; ij = iter.next()) {
-        int i = ij.first;
-        int j = ij.second;
-        float iFiltered = 0;
-        int neighbor_i = 0;
-        int neighbor_j = 0;
-
-        for (int ii = 0; ii < diameter; ii++) {
-            int jj = half;
-            neighbor_i = i - (half - ii);
-            neighbor_j = j - (half - jj);
-            if (neighbor_i < 0) {
-                neighbor_i += diameter + 1;
-            } else if (neighbor_i >= HEIGHT) {
-                neighbor_i -= diameter + 1;
-            }
-            if (neighbor_j < 0) {
-                neighbor_j += diameter + 1;
-            } else if (neighbor_j >= WIDTH) {
-                neighbor_j -= diameter + 1;
-            }
-
-            iFiltered += src[neighbor_i * PITCH + neighbor_j] * filter[ii];
-        }
-        temp[i * PITCH + j] = iFiltered;
-    }
-    copyBlockToBufferByte(temp);
+    copyBlockToBufferByte(temp, isOptimized ? half : 0);
     for (int i = 0; i < 9; i++) {
         if (PARTITION.neigbhors[i] == -1) {
             continue;
         }
-        if (isOptimized) {
-            sendBlockByte(PARTITION.neigbhors[i], TAG_OUTPUT_STEP0, diameter, i);
-        } else {
-            sendBlockByte(PARTITION.neigbhors[i], TAG_OUTPUT_STEP0);
-        }
+        sendBlockByte(PARTITION.neigbhors[i], TAG_OUTPUT_STEP0, isOptimized ? half : 0, i);
     }
     if (!isOptimized) {
         recvBlocksByte(temp, PARTITION.neighborCount, TAG_OUTPUT_STEP0);
     }
-    
 
-    iter = GridIterator(PARTITION, half, PROCID);
+    GridIterator iter(PARTITION, half, PROCID);
     for (std::pair<int,int> ij = iter.next(); ij.first != -1; ij = iter.next()) {
         if (isOptimized && iter.shouldCommunicate()) {
-            recvBlocksByte(temp, PARTITION.neighborCount, TAG_OUTPUT_STEP0, diameter);
+            recvBlocksByte(temp, PARTITION.neighborCount, TAG_OUTPUT_STEP0, half);
         }
         int i = ij.first;
         int j = ij.second;
@@ -437,39 +447,38 @@ float gaussian(float x, double sigma) {
 
 void applyBilateralFilter(BYTE *src, BYTE *dst, int diameter, float sigmaI, float sigmaS) {
     int half = diameter / 2;
-    GridIterator iter(PARTITION, 0, PROCID);
-    for (std::pair<int,int> ij = iter.next(); ij.first != -1; ij = iter.next()) {
-        int i = ij.first;
-        int j = ij.second;
-        float iFiltered = 0;
-        float wP = 0;
-        int neighbor_i = 0;
-        int neighbor_j = 0;
+    for (int i = PARTITION.topPixel; i <= PARTITION.bottomPixel; i++) {
+        for (int j = PARTITION.leftPixel; j <= PARTITION.rightPixel; j++) {
+            float iFiltered = 0;
+            float wP = 0;
+            int neighbor_i = 0;
+            int neighbor_j = 0;
 
-        for (int ii = 0; ii < diameter; ii++) {
-            for (int jj = 0; jj < diameter; jj++) {
-                neighbor_i = i - (half - ii);
-                neighbor_j = j - (half - jj);
-                if (neighbor_i < 0) {
-                    neighbor_i += diameter + 1;
-                } else if (neighbor_i >= HEIGHT) {
-                    neighbor_i -= diameter + 1;
-                }
-                if (neighbor_j < 0) {
-                    neighbor_j += diameter + 1;
-                } else if (neighbor_j >= WIDTH) {
-                    neighbor_j -= diameter + 1;
-                }
+            for (int ii = 0; ii < diameter; ii++) {
+                for (int jj = 0; jj < diameter; jj++) {
+                    neighbor_i = i - (half - ii);
+                    neighbor_j = j - (half - jj);
+                    if (neighbor_i < 0) {
+                        neighbor_i += diameter + 1;
+                    } else if (neighbor_i >= HEIGHT) {
+                        neighbor_i -= diameter + 1;
+                    }
+                    if (neighbor_j < 0) {
+                        neighbor_j += diameter + 1;
+                    } else if (neighbor_j >= WIDTH) {
+                        neighbor_j -= diameter + 1;
+                    }
 
-                float gi = gaussian(src[neighbor_i * PITCH + neighbor_j] - src[i * PITCH + j], sigmaI);
-                float gs = gaussian(distance(i, j, neighbor_i, neighbor_j), sigmaS);
-                float w = gi * gs;
-                iFiltered = iFiltered + src[neighbor_i * PITCH + neighbor_j] * w;
-                wP = wP + w;
+                    float gi = gaussian(src[neighbor_i * PITCH + neighbor_j] - src[i * PITCH + j], sigmaI);
+                    float gs = gaussian(distance(i, j, neighbor_i, neighbor_j), sigmaS);
+                    float w = gi * gs;
+                    iFiltered = iFiltered + src[neighbor_i * PITCH + neighbor_j] * w;
+                    wP = wP + w;
+                }
             }
+            iFiltered = iFiltered / wP;
+            dst[i * PITCH + j] = iFiltered;
         }
-        iFiltered = iFiltered / wP;
-        dst[i * PITCH + j] = iFiltered;
     }
 }
 
@@ -515,10 +524,15 @@ void applySobelFilter(BYTE *src, BYTE *gradient, float *direction) {
     float maxGradientToSend = maxGradient;
     MPI_Allreduce(&maxGradientToSend, &maxGradient, 1, MPI_FLOAT, MPI_MAX, MPI_COMM_WORLD);
 
-    for (int i = 1; i < HEIGHT - 1; i++) {
-        for (int j = 1; j < WIDTH - 1; j++) {
-            gradient[i * PITCH + j] = gradientTemp[i * PITCH + j] / maxGradient * 255;
+    iter = GridIterator(PARTITION, 0, PROCID);
+    float factor = 1.f / maxGradient * 255.f;
+    for (std::pair<int,int> ij = iter.next(); ij.first != -1; ij = iter.next()) {
+        int i = ij.first;
+        int j = ij.second;
+        if (i == 0 || i == HEIGHT - 1 || j == 0 || j == WIDTH - 1) {
+            continue;
         }
+        gradient[i * PITCH + j] = gradientTemp[i * PITCH + j] * factor;
     }
 }
 
@@ -661,31 +675,42 @@ void aggregateOutputAndSaveImage(const char *filepath, BYTE *dst, const char *st
 
 void start(){
     FIBITMAP *image = NULL;
-    int len = strlen(filepath);
-    if (len < 5){
-        error_exit("image file not found \"%s\"\n", filepath);
-    }
-    const char *ext = filepath + len - 4;
-    if (strcmp(ext, ".jpg") == 0 || strcmp(ext, ".JPG") == 0) {
-        IMAGE_FORMAT = FIF_JPEG;
-    } else if (strcmp(ext, ".png") == 0 || strcmp(ext, ".PNG") == 0) {
-        IMAGE_FORMAT = FIF_PNG;
-    } else if (strcmp(ext, ".bmp") == 0 || strcmp(ext, ".bmp") == 0) {
-        IMAGE_FORMAT = FIF_BMP;
-    } else {
-        error_exit("unsupported image extension \"%s\"\n", ext);
-    }
-    image = FreeImage_Load(IMAGE_FORMAT, filepath);
-    if(image == NULL){
-        error_exit("image file not found \"%s\"\n", filepath);
-    }
-    image = FreeImage_ConvertToGreyscale(image);
-    image = FreeImage_ConvertTo8Bits(image);
+    int info[4];
+    if (PROCID == 0) {
+        int len = strlen(filepath);
+        if (len < 5){
+            error_exit("image file not found \"%s\"\n", filepath);
+        }
+        const char *ext = filepath + len - 4;
+        if (strcmp(ext, ".jpg") == 0 || strcmp(ext, ".JPG") == 0) {
+            IMAGE_FORMAT = FIF_JPEG;
+        } else if (strcmp(ext, ".png") == 0 || strcmp(ext, ".PNG") == 0) {
+            IMAGE_FORMAT = FIF_PNG;
+        } else if (strcmp(ext, ".bmp") == 0 || strcmp(ext, ".bmp") == 0) {
+            IMAGE_FORMAT = FIF_BMP;
+        } else {
+            error_exit("unsupported image extension \"%s\"\n", ext);
+        }
+        image = FreeImage_Load(IMAGE_FORMAT, filepath);
+        if(image == NULL){
+            error_exit("image file not found \"%s\"\n", filepath);
+        }
+        image = FreeImage_ConvertToGreyscale(image);
+        image = FreeImage_ConvertTo8Bits(image);
 
-    BPP = FreeImage_GetBPP(image);
-    WIDTH = FreeImage_GetWidth(image);
-    HEIGHT = FreeImage_GetHeight(image);
-    PITCH = FreeImage_GetPitch(image);
+        info[0] = BPP = FreeImage_GetBPP(image);
+        info[1] = WIDTH = FreeImage_GetWidth(image);
+        info[2] = HEIGHT = FreeImage_GetHeight(image);
+        info[3] = PITCH = FreeImage_GetPitch(image);
+    }
+    MPI_Bcast(info, 4, MPI_INT, 0, MPI_COMM_WORLD);
+
+    if (PROCID != 0) {
+        BPP = info[0];
+        WIDTH = info[1];
+        HEIGHT = info[2];
+        PITCH = info[3];
+    }
 
     BYTE *src = new BYTE[PITCH * HEIGHT];
     BYTE *dst = new BYTE[PITCH * HEIGHT];
@@ -706,12 +731,46 @@ void start(){
     if (PROCID == 0) {
         FreeImage_ConvertToRawBits(src, image, PITCH, BPP, 0, 0, 0, true);
     }
-
+    
     int blurDiameter = 15;
     
-    MPI_Bcast(src, PITCH * HEIGHT, MPI_BYTE, 0, MPI_COMM_WORLD);
-
+    // MPI_Barrier(MPI_COMM_WORLD);
     startTime = MPI_Wtime();
+    if (isOptimized) {
+        if (PROCID == 0) {
+            MPI_Request *request = new MPI_Request;
+            for (int proc = 1; proc < NPROC; proc++) {
+                getCommunicationInfoForInitialization(info, PARTITIONS[proc], blurDiameter / 2);
+                int width = info[0];
+                int height = info[1];
+                int startI = info[2];
+                int startJ = info[3];
+                int k = 0;
+                BYTE *buffer = new BYTE[width * height];
+                for (int i = startI; i < startI + height; i++) {
+                    std::copy(src + i * PITCH + startJ, src + i * PITCH + startJ + width, buffer + k);
+                    k += width;
+                }
+                MPI_Isend(buffer, width * height, MPI_BYTE, proc, TAG_OUTPUT_INIT, MPI_COMM_WORLD, request);
+            }
+        } else {
+            getCommunicationInfoForInitialization(info, PARTITION, blurDiameter / 2);
+            int width = info[0];
+            int height = info[1];
+            int startI = info[2];
+            int startJ = info[3];
+            BYTE *buffer = new BYTE[width * height];
+            MPI_Status status;
+            MPI_Recv(buffer, width * height, MPI_BYTE, 0, TAG_OUTPUT_INIT, MPI_COMM_WORLD, &status);
+            int k = 0;
+            for (int i = startI; i < startI + height; i++) {
+                std::copy(buffer + k, buffer + k + width, src + i * PITCH + startJ);
+                k += width;
+            }
+        }
+    } else {
+        MPI_Bcast(src, PITCH * HEIGHT, MPI_BYTE, 0, MPI_COMM_WORLD);
+    }
     
     if(useGaussian){
         if (useGaussianTwoPass) {
@@ -725,16 +784,12 @@ void start(){
     } else {
         applyBilateralFilter(src, dst, blurDiameter, 30.f, 20.f);
     }
-    copyBlockToBufferByte(dst);
+    copyBlockToBufferByte(dst, isOptimized ? 1 : 0);
     for (int i = 0; i < 9; i++) {
         if (PARTITION.neigbhors[i] == -1) {
             continue;
         }
-        if (isOptimized) {
-            sendBlockByte(PARTITION.neigbhors[i], TAG_OUTPUT_STEP1, 1, i);
-        } else {
-            sendBlockByte(PARTITION.neigbhors[i], TAG_OUTPUT_STEP1);
-        }
+        sendBlockByte(PARTITION.neigbhors[i], TAG_OUTPUT_STEP1, isOptimized ? 1 : 0, i);
     }
 
     if(stage == 1){
@@ -755,19 +810,14 @@ void start(){
 
     applySobelFilter(src, dst, direction);
 
-    copyBlockToBufferByte(dst);
-    copyBlockToBufferFloat(direction);
+    copyBlockToBufferByte(dst, isOptimized ? 1 : 0);
+    copyBlockToBufferFloat(direction, isOptimized ? 1 : 0);
     for (int i = 0; i < 9; i++) {
         if (PARTITION.neigbhors[i] == -1) {
             continue;
         }
-        if (isOptimized) {
-            sendBlockByte(PARTITION.neigbhors[i], TAG_OUTPUT_STEP2, 1, i);
-            sendBlockFloat(PARTITION.neigbhors[i], TAG_OUTPUT_STEP2_DIRECTION, 1, i);    
-        } else {
-            sendBlockByte(PARTITION.neigbhors[i], TAG_OUTPUT_STEP2);
-            sendBlockFloat(PARTITION.neigbhors[i], TAG_OUTPUT_STEP2_DIRECTION);
-        }
+        sendBlockByte(PARTITION.neigbhors[i], TAG_OUTPUT_STEP2, isOptimized ? 1 : 0, i);
+        sendBlockFloat(PARTITION.neigbhors[i], TAG_OUTPUT_STEP2_DIRECTION, isOptimized ? 1 : 0, i);   
     }
 
     if(stage == 2){
@@ -798,16 +848,12 @@ void start(){
     }
     double startTime5 = MPI_Wtime();
 
-    copyBlockToBufferByte(dst);
+    copyBlockToBufferByte(dst, isOptimized ? 1 : 0);
     for (int i = 0; i < 9; i++) {
         if (PARTITION.neigbhors[i] == -1) {
             continue;
         }
-        if (isOptimized) {
-            sendBlockByte(PARTITION.neigbhors[i], TAG_OUTPUT_STEP4, 1, i);
-        } else {
-            sendBlockByte(PARTITION.neigbhors[i], TAG_OUTPUT_STEP4);
-        }
+        sendBlockByte(PARTITION.neigbhors[i], TAG_OUTPUT_STEP4, isOptimized ? 1 : 0, i);
     }
 
     applyHysteresis(dst);
