@@ -504,10 +504,16 @@ void applySobelFilter(BYTE *src, BYTE *gradient, float *direction) {
         float xGradient = 0;
         float yGradient = 0;
         for (int ii = 0; ii < 3; ii++) {
-            for (int jj = 0; jj < 3; jj++) {
+            for (int jj = 0; jj < 3; jj+=2) {
                 int neighbor_i = i + ii - 1;
                 int neighbor_j = j + jj - 1;
                 xGradient += xFilter[ii][jj] * src[neighbor_i * PITCH + neighbor_j];
+            }
+        }
+        for (int ii = 0; ii < 3; ii+=2) {
+            for (int jj = 0; jj < 3; jj++) {
+                int neighbor_i = i + ii - 1;
+                int neighbor_j = j + jj - 1;
                 yGradient += yFilter[ii][jj] * src[neighbor_i * PITCH + neighbor_j];
             }
         }
