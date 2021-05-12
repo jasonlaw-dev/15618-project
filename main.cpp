@@ -541,6 +541,7 @@ void applySobelFilter(BYTE *src, BYTE *gradient, float *direction) {
     }
 }
 
+// https://towardsdatascience.com/canny-edge-detection-step-by-step-in-python-computer-vision-b49c3a2d8123
 void applyNonMaxSuppressionAndThreshold(BYTE *src, BYTE *dst, float *direction, bool applyThreshold = true) {
     GridIterator iter(PARTITION, isOptimized ? 1 : 0, PROCID);
     if (!isOptimized) {
