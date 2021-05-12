@@ -447,16 +447,18 @@ void applyNonMaxSuppression(BYTE *src, BYTE *dst, float *direction) {
         int q = 255;
         int r = 255;
 
-        if ((0 <= direction[i * PITCH + j] && direction[i * PITCH + j] < 22.5) || (157.5 <= direction[i * PITCH + j] && direction[i * PITCH + j] <= 180)) {
+        float dir = direction[i * PITCH + j];
+
+        if ((0 <= dir && dir < 22.5) || (157.5 <= dir && dir <= 180)) {
             q = src[i * PITCH + j + 1];
             r = src[i * PITCH + j - 1];
-        } else if (22.5 <= direction[i * PITCH + j] && direction[i * PITCH + j] < 67.5) {
+        } else if (22.5 <= dir && dir < 67.5) {
             q = src[(i + 1) * PITCH + j - 1];
             r = src[(i - 1) * PITCH + j + 1];
-        } else if (67.5 <= direction[i * PITCH + j] && direction[i * PITCH + j] < 112.5) {
+        } else if (67.5 <= dir && dir < 112.5) {
             q = src[(i + 1) * PITCH + j];
             r = src[(i - 1) * PITCH + j];
-        } else if (112.5 <= direction[i * PITCH + j] && direction[i * PITCH + j] < 157.5) {
+        } else if (112.5 <= dir && dir < 157.5) {
             q = src[(i - 1) * PITCH + j - 1];
             r = src[(i + 1) * PITCH + j + 1];
         }
