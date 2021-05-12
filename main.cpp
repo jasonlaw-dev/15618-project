@@ -530,7 +530,6 @@ void applySobelFilter(BYTE *src, BYTE *gradient, float *direction) {
     float maxGradientToSend = maxGradient;
     MPI_Allreduce(&maxGradientToSend, &maxGradient, 1, MPI_FLOAT, MPI_MAX, MPI_COMM_WORLD);
 
-    iter = GridIterator(PARTITION, 0, PROCID);
     float factor = 1.f / maxGradient * 255.f;
     for (int i = PARTITION.topPixel; i <= PARTITION.bottomPixel; i++) {
         for (int j = PARTITION.leftPixel; j <= PARTITION.rightPixel; j++) {
