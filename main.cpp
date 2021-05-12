@@ -579,25 +579,8 @@ void applyNonMaxSuppression(BYTE *src, BYTE *dst, float *direction) {
 }
 
 void applyThreshold(BYTE *image) {
-    float lowThresholdRatio = 0.05f;
-    float highThresholdRatio = 0.09f;
-    int maxPixel = 0;
-    for (int i = PARTITION.topPixel; i <= PARTITION.bottomPixel; i++) {
-        for (int j = PARTITION.leftPixel; j <= PARTITION.rightPixel; j++) {
-            if (i == 0 || i == HEIGHT - 1 || j == 0 || j == WIDTH - 1) {
-                continue;
-            }
-            if (image[i * PITCH + j] > maxPixel) {
-                maxPixel = image[i * PITCH + j];
-            }
-        }
-    }
-    
-    int maxPixelToSend = maxPixel;
-    MPI_Allreduce(&maxPixelToSend, &maxPixel, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-    
-    int highThreshold = maxPixel * highThresholdRatio;
-    int lowThreshold = highThreshold * lowThresholdRatio;
+    const int highThreshold = 22; // 255 * 0.09f
+    const int lowThreshold = 1; // highThreshold * 0.05f
 
     for (int i = PARTITION.topPixel; i <= PARTITION.bottomPixel; i++) {
         for (int j = PARTITION.leftPixel; j <= PARTITION.rightPixel; j++) {
