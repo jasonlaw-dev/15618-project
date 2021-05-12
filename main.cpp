@@ -40,6 +40,7 @@ float *OUTPUT_BUFFER_FLOAT = NULL;
 float *INPUT_BUFFER_FLOAT = NULL;
 FREE_IMAGE_FORMAT IMAGE_FORMAT = FIF_UNKNOWN;
 
+int TAG_OUTPUT_STEP0 = 1000;
 int TAG_OUTPUT_STEP1 = 1001;
 int TAG_OUTPUT_STEP2 = 1002;
 int TAG_OUTPUT_STEP2_DIRECTION = 2002;
@@ -52,6 +53,7 @@ double endTime;
 const char* filepath = "";
 int stage = 0;
 bool useGaussian = false;
+bool useGaussianTwoPass = false;
 bool isOptimized = false;
 
 PartitionInfo PARTITION;
@@ -299,6 +301,23 @@ float* getGaussianFilterKernel(int diameter, float sigma) {
     }
     return filter;
 }
+float* getGaussianFilterKernel1D(int diameter, float sigma) {
+    float *filter = new float[diameter];
+    int half = diameter / 2;
+    float filterSum = 0.f; //for normalization
+    for (int r = -half; r <= half; ++r) {
+        int c = -half;
+        float filterValue = expf( -(float)(c * c + r * r) / (2.f * sigma * sigma));
+        filter[r + half] = filterValue;
+        filterSum += filterValue;
+    }
+
+    float normalizationFactor = 1.f / filterSum;
+    for (int r = -half; r <= half; ++r) {
+        filter[r + half] *= normalizationFactor;
+    }
+    return filter;
+}
 
 void applyGaussianFilter(BYTE *src, BYTE *dst, int diameter, float *filter) {
     int half = diameter / 2;
@@ -327,6 +346,82 @@ void applyGaussianFilter(BYTE *src, BYTE *dst, int diameter, float *filter) {
 
                 iFiltered += src[neighbor_i * PITCH + neighbor_j] * filter[ii * diameter + jj];
             }
+        }
+        dst[i * PITCH + j] = iFiltered;
+    }
+}
+void applyGaussianFilterTwoPass(BYTE *src, BYTE *dst, BYTE *temp, int diameter, float *filter) {
+    int half = diameter / 2;
+    GridIterator iter(PARTITION, 0, PROCID);
+    for (std::pair<int,int> ij = iter.next(); ij.first != -1; ij = iter.next()) {
+        int i = ij.first;
+        int j = ij.second;
+        float iFiltered = 0;
+        int neighbor_i = 0;
+        int neighbor_j = 0;
+
+        for (int ii = 0; ii < diameter; ii++) {
+            int jj = half;
+            neighbor_i = i - (half - ii);
+            neighbor_j = j - (half - jj);
+            if (neighbor_i < 0) {
+                neighbor_i += diameter + 1;
+            } else if (neighbor_i >= HEIGHT) {
+                neighbor_i -= diameter + 1;
+            }
+            if (neighbor_j < 0) {
+                neighbor_j += diameter + 1;
+            } else if (neighbor_j >= WIDTH) {
+                neighbor_j -= diameter + 1;
+            }
+
+            iFiltered += src[neighbor_i * PITCH + neighbor_j] * filter[ii];
+        }
+        temp[i * PITCH + j] = iFiltered;
+    }
+    copyBlockToBufferByte(temp);
+    for (int i = 0; i < 9; i++) {
+        if (PARTITION.neigbhors[i] == -1) {
+            continue;
+        }
+        if (isOptimized) {
+            sendBlockByte(PARTITION.neigbhors[i], TAG_OUTPUT_STEP0, diameter, i);
+        } else {
+            sendBlockByte(PARTITION.neigbhors[i], TAG_OUTPUT_STEP0);
+        }
+    }
+    if (!isOptimized) {
+        recvBlocksByte(temp, PARTITION.neighborCount, TAG_OUTPUT_STEP0);
+    }
+    
+
+    iter = GridIterator(PARTITION, half, PROCID);
+    for (std::pair<int,int> ij = iter.next(); ij.first != -1; ij = iter.next()) {
+        if (isOptimized && iter.shouldCommunicate()) {
+            recvBlocksByte(temp, PARTITION.neighborCount, TAG_OUTPUT_STEP0, diameter);
+        }
+        int i = ij.first;
+        int j = ij.second;
+        float iFiltered = 0;
+        int neighbor_i = 0;
+        int neighbor_j = 0;
+
+        for (int jj = 0; jj < diameter; jj++) {
+            int ii = half;
+            neighbor_i = i - (half - ii);
+            neighbor_j = j - (half - jj);
+            if (neighbor_i < 0) {
+                neighbor_i += diameter + 1;
+            } else if (neighbor_i >= HEIGHT) {
+                neighbor_i -= diameter + 1;
+            }
+            if (neighbor_j < 0) {
+                neighbor_j += diameter + 1;
+            } else if (neighbor_j >= WIDTH) {
+                neighbor_j -= diameter + 1;
+            }
+
+            iFiltered += temp[neighbor_i * PITCH + neighbor_j] * filter[jj];
         }
         dst[i * PITCH + j] = iFiltered;
     }
@@ -628,18 +723,25 @@ void start(){
     if (PROCID == 0) {
         FreeImage_ConvertToRawBits(src, image, PITCH, BPP, 0, 0, 0, true);
     }
+
+    int blurDiameter = 15;
+    
     startTime = MPI_Wtime();
     
     MPI_Bcast(src, PITCH * HEIGHT, MPI_BYTE, 0, MPI_COMM_WORLD);
-    
-    int blurDiameter;
     if(useGaussian){
-        blurDiameter = 15;
-        float *gaussianFilter = getGaussianFilterKernel(blurDiameter, 2.f);
-        applyGaussianFilter(src, dst, blurDiameter, gaussianFilter);
+        if (useGaussianTwoPass) {
+            BYTE *temp = new BYTE[PITCH * HEIGHT];
+            float *gaussianFilter1D = getGaussianFilterKernel1D(blurDiameter, 2.f);
+            applyGaussianFilterTwoPass(src, dst, temp, blurDiameter, gaussianFilter1D);
+        } else {
+            float *gaussianFilter = getGaussianFilterKernel(blurDiameter, 2.f);
+            applyGaussianFilter(src, dst, blurDiameter, gaussianFilter);
+        }
+        
+        
     } else {
-        blurDiameter = 9;
-        applyBilateralFilter(src, dst, 9, 30.f, 20.f);
+        applyBilateralFilter(src, dst, blurDiameter, 30.f, 20.f);
     }
     copyBlockToBufferByte(dst);
     for (int i = 0; i < 9; i++) {
@@ -751,7 +853,7 @@ int main(int argc, char* argv[]) {
         exit(-1);
     }
     int ch = 0;
-    while ((ch = getopt(argc, argv, "f:s:go")) != -1)
+    while ((ch = getopt(argc, argv, "f:s:got")) != -1)
     {
         switch (ch)
         {
@@ -767,6 +869,8 @@ int main(int argc, char* argv[]) {
             case 'o':
                 isOptimized = true;
                 break;
+            case 't':
+                useGaussianTwoPass = true;
         }
     }
     start();
