@@ -662,44 +662,31 @@ void aggregateOutputAndSaveImage(const char *filepath, BYTE *dst, const char *st
 
 void start(){
     FIBITMAP *image = NULL;
-    int info[4];
-    if (PROCID == 0) {
-        int len = strlen(filepath);
-        if (len < 5){
-            error_exit("image file not found \"%s\"\n", filepath);
-        }
-        const char *ext = filepath + len - 4;
-        if (strcmp(ext, ".jpg") == 0 || strcmp(ext, ".JPG") == 0) {
-            IMAGE_FORMAT = FIF_JPEG;
-        } else if (strcmp(ext, ".png") == 0 || strcmp(ext, ".PNG") == 0) {
-            IMAGE_FORMAT = FIF_PNG;
-        } else if (strcmp(ext, ".bmp") == 0 || strcmp(ext, ".bmp") == 0) {
-            IMAGE_FORMAT = FIF_BMP;
-        } else {
-            error_exit("unsupported image extension \"%s\"\n", ext);
-        }
-        image = FreeImage_Load(IMAGE_FORMAT, filepath);
-        if(image == NULL){
-            error_exit("image file not found \"%s\"\n", filepath);
-        }
-        image = FreeImage_ConvertToGreyscale(image);
-        image = FreeImage_ConvertTo8Bits(image);
-
-        info[0] = BPP = FreeImage_GetBPP(image);
-        info[1] = WIDTH = FreeImage_GetWidth(image);
-        info[2] = HEIGHT = FreeImage_GetHeight(image);
-        info[3] = PITCH = FreeImage_GetPitch(image);
-
-        printImageInfo(image);
+    int len = strlen(filepath);
+    if (len < 5){
+        error_exit("image file not found \"%s\"\n", filepath);
     }
-    MPI_Bcast(info, 4, MPI_INT, 0, MPI_COMM_WORLD);
-    
-    if (PROCID != 0) {
-        BPP = info[0];
-        WIDTH = info[1];
-        HEIGHT = info[2];
-        PITCH = info[3];
+    const char *ext = filepath + len - 4;
+    if (strcmp(ext, ".jpg") == 0 || strcmp(ext, ".JPG") == 0) {
+        IMAGE_FORMAT = FIF_JPEG;
+    } else if (strcmp(ext, ".png") == 0 || strcmp(ext, ".PNG") == 0) {
+        IMAGE_FORMAT = FIF_PNG;
+    } else if (strcmp(ext, ".bmp") == 0 || strcmp(ext, ".bmp") == 0) {
+        IMAGE_FORMAT = FIF_BMP;
+    } else {
+        error_exit("unsupported image extension \"%s\"\n", ext);
     }
+    image = FreeImage_Load(IMAGE_FORMAT, filepath);
+    if(image == NULL){
+        error_exit("image file not found \"%s\"\n", filepath);
+    }
+    image = FreeImage_ConvertToGreyscale(image);
+    image = FreeImage_ConvertTo8Bits(image);
+
+    BPP = FreeImage_GetBPP(image);
+    WIDTH = FreeImage_GetWidth(image);
+    HEIGHT = FreeImage_GetHeight(image);
+    PITCH = FreeImage_GetPitch(image);
 
     BYTE *src = new BYTE[PITCH * HEIGHT];
     BYTE *dst = new BYTE[PITCH * HEIGHT];
@@ -712,9 +699,6 @@ void start(){
             PARTITION = PARTITIONS[i];
         }
     }
-    if (PROCID == 0) {
-        printf("Rows %d, cols %d\n", BLOCK_ROWS, BLOCK_COLS);
-    }
     OUTPUT_BUFFER = new BYTE[BLOCK_WIDTH * BLOCK_HEIGHT];
     INPUT_BUFFER = new BYTE[BLOCK_WIDTH * BLOCK_HEIGHT];
     OUTPUT_BUFFER_FLOAT = new float[BLOCK_WIDTH * BLOCK_HEIGHT];
@@ -726,9 +710,10 @@ void start(){
 
     int blurDiameter = 15;
     
+    MPI_Barrier(MPI_COMM_WORLD);
+
     startTime = MPI_Wtime();
     
-    MPI_Bcast(src, PITCH * HEIGHT, MPI_BYTE, 0, MPI_COMM_WORLD);
     if(useGaussian){
         if (useGaussianTwoPass) {
             BYTE *temp = new BYTE[PITCH * HEIGHT];
@@ -738,8 +723,6 @@ void start(){
             float *gaussianFilter = getGaussianFilterKernel(blurDiameter, 2.f);
             applyGaussianFilter(src, dst, blurDiameter, gaussianFilter);
         }
-        
-        
     } else {
         applyBilateralFilter(src, dst, blurDiameter, 30.f, 20.f);
     }
