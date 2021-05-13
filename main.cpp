@@ -734,7 +734,7 @@ void start(){
     
     int blurDiameter = 15;
     
-    // MPI_Barrier(MPI_COMM_WORLD);
+    MPI_Barrier(MPI_COMM_WORLD);
     startTime = MPI_Wtime();
     if (isOptimized) {
         if (PROCID == 0) {
