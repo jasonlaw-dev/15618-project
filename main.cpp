@@ -34,10 +34,10 @@ int NPROC = -1;
 int PROCID = -1;
 int WEAK = 25;
 int STRONG = 255;
-BYTE *OUTPUT_BUFFER = NULL;
-BYTE *INPUT_BUFFER = NULL;
-float *OUTPUT_BUFFER_FLOAT = NULL;
-float *INPUT_BUFFER_FLOAT = NULL;
+BYTE *OUTPUT_BUFFER = NULL; // output buffer for MPI_Isend
+BYTE *INPUT_BUFFER = NULL; // input buffer for MPI_Recv
+float *OUTPUT_BUFFER_FLOAT = NULL; // similar but for float
+float *INPUT_BUFFER_FLOAT = NULL; // similar but for float
 FREE_IMAGE_FORMAT IMAGE_FORMAT = FIF_UNKNOWN;
 
 int TAG_OUTPUT_INIT = 500;
@@ -60,6 +60,7 @@ bool isOptimized = false;
 PartitionInfo PARTITION;
 PartitionInfo *PARTITIONS = NULL;
 
+// set up global variables for block
 void setupBlockSize() {
     BLOCK_ROWS = 1;
     BLOCK_COLS = NPROC;
@@ -84,6 +85,7 @@ void setupBlockSize() {
     BLOCK_WIDTH = (WIDTH + BLOCK_COLS - 1) / BLOCK_COLS;
 }
 
+// Get the PartitionInfo array (block) assigned to procId
 PartitionInfo *getPartition(int procId) {
     PartitionInfo *partition = new PartitionInfo;
 
@@ -131,7 +133,7 @@ PartitionInfo *getPartition(int procId) {
     return partition;
 }
 
-
+// get communication info - the width, height, start row and col needs to be send/recv
 void getCommunicationInfo(int *info, PartitionInfo partition, int radius, int direction) {
     int width = 0;
     int height = 0;
@@ -183,6 +185,7 @@ void getCommunicationInfo(int *info, PartitionInfo partition, int radius, int di
     info[3] = startJ;
 }
 
+// get communication info for initialization (distribution of blocks)
 void getCommunicationInfoForInitialization(int *info, PartitionInfo partition, int radius) {
     int startI = std::max(partition.topPixel - radius, 0);
     int endI = std::min(partition.bottomPixel + radius, HEIGHT-1);
@@ -198,12 +201,14 @@ void getCommunicationInfoForInitialization(int *info, PartitionInfo partition, i
     info[3] = startJ;
 }
 
+// send block helper function template
 template <typename T>
 void sendBlock(T *buffer, MPI_Datatype type, int dest, int tag, int radius, int direction) {
     MPI_Request *request = new MPI_Request;
     if (radius == 0) {
         MPI_Isend(buffer, BLOCK_WIDTH * BLOCK_HEIGHT, type, dest, tag, MPI_COMM_WORLD, request);
     } else {
+        // sending just relevant pixels to its neighbor
         int info[4];
         getCommunicationInfo(info, PARTITION, radius, direction);
         int width = info[0];
@@ -220,14 +225,17 @@ void sendBlock(T *buffer, MPI_Datatype type, int dest, int tag, int radius, int 
     }
 }
 
+// send block by Byte
 void sendBlockByte(int dest, int tag, int radius = 0, int direction = -1) {
     sendBlock<BYTE>(OUTPUT_BUFFER, MPI_BYTE, dest, tag, radius, direction);
 }
 
+// send block by Float
 void sendBlockFloat(int dest, int tag, int radius = 0, int direction = -1) {
     sendBlock<float>(OUTPUT_BUFFER_FLOAT, MPI_FLOAT, dest, tag, radius, direction);
 }
 
+// copy block helper function template
 template <typename T>
 void copyBlockToBuffer(T *image, T *buffer, int radius) {
     if (radius == 0) {
@@ -235,6 +243,7 @@ void copyBlockToBuffer(T *image, T *buffer, int radius) {
             std::copy(image + i * PITCH + PARTITION.leftPixel, image + i * PITCH + PARTITION.rightPixel + 1, buffer + (i - PARTITION.topPixel) * BLOCK_WIDTH);
         }
     } else {
+        // copying just the outer region to the buffer
         for (int i = PARTITION.topPixel; i <= PARTITION.bottomPixel; i++) {
             if (i < PARTITION.topPixel + radius || i > PARTITION.bottomPixel - radius) {
                 std::copy(image + i * PITCH + PARTITION.leftPixel, image + i * PITCH + PARTITION.rightPixel + 1, buffer + (i - PARTITION.topPixel) * BLOCK_WIDTH);
@@ -246,14 +255,17 @@ void copyBlockToBuffer(T *image, T *buffer, int radius) {
     }
 }
 
+// copy block by Byte
 void copyBlockToBufferByte(BYTE *image, int radius = 0) {
     copyBlockToBuffer<BYTE>(image, OUTPUT_BUFFER, radius);
 }
 
+// copy block by Float
 void copyBlockToBufferFloat(float *image, int radius = 0) {
     copyBlockToBuffer<float>(image, OUTPUT_BUFFER_FLOAT, radius);
 }
 
+// receive block helper function template
 template <typename T>
 void recvBlocks(T *image, T *buffer, MPI_Datatype type, int recvCount, int tag, int radius) {
     MPI_Status *status = new MPI_Status;
@@ -267,6 +279,7 @@ void recvBlocks(T *image, T *buffer, MPI_Datatype type, int recvCount, int tag, 
                 std::copy(bufferStart, bufferEnd, image + i * PITCH + PARTITIONS[source].leftPixel);
             }    
         } else {
+            // receiving just the relevant pixels and put to the image
             int direction;
             for (direction = 0; direction < 9; direction++) {
                 if (PARTITIONS[source].neigbhors[direction] == PROCID) {
@@ -288,14 +301,17 @@ void recvBlocks(T *image, T *buffer, MPI_Datatype type, int recvCount, int tag, 
     }
 }
 
+// receive block by byte
 void recvBlocksByte(BYTE *image, int recvCount, int tag, int radius = 0) {
     recvBlocks<BYTE>(image, INPUT_BUFFER, MPI_BYTE, recvCount, tag, radius);
 }
 
+// receive block by float
 void recvBlocksFloat(float *image, int recvCount, int tag, int radius = 0) {
     recvBlocks<float>(image, INPUT_BUFFER_FLOAT, MPI_FLOAT, recvCount, tag, radius);
 }
 
+// get the Gaussian Filter helper function (one-pass)
 // https://github.com/aekanman/gaussian-blur/blob/master/helper.cpp
 float* getGaussianFilterKernel(int diameter, float sigma) {
     float *filter = new float[diameter * diameter];
@@ -317,6 +333,8 @@ float* getGaussianFilterKernel(int diameter, float sigma) {
     }
     return filter;
 }
+
+// get the Gaussian Filter helper function (two-pass)
 float* getGaussianFilterKernel1D(int diameter, float sigma) {
     float *filter = new float[diameter];
     int half = diameter / 2;
@@ -335,6 +353,8 @@ float* getGaussianFilterKernel1D(int diameter, float sigma) {
     return filter;
 }
 
+// apply gaussian blur on src, diameter can be used to adjust the size of brush (stage 1)
+// Gaussian Blur recalculates each pixel using neighbor pixels.
 void applyGaussianFilter(BYTE *src, BYTE *dst, int diameter, float *filter) {
     int half = diameter / 2;
     for (int i = PARTITION.topPixel; i <= PARTITION.bottomPixel; i++) {
@@ -365,6 +385,9 @@ void applyGaussianFilter(BYTE *src, BYTE *dst, int diameter, float *filter) {
         }
     }
 }
+
+// apply two-pass gaussian blur on src, diameter can be used to adjust the size of brush (stage 1)
+// Gaussian Blur recalculates each pixel using neighbor pixels.
 void applyGaussianFilterTwoPass(BYTE *src, BYTE *dst, BYTE *temp, int diameter, float *filter) {
     int half = diameter / 2;
     for (int i = PARTITION.topPixel; i <= PARTITION.bottomPixel; i++) {
@@ -436,15 +459,19 @@ void applyGaussianFilterTwoPass(BYTE *src, BYTE *dst, BYTE *temp, int diameter, 
     }
 }
 
+// helper function used in bilateral filter
 // https://github.com/anlcnydn/bilateral/blob/master/bilateral_filter.cpp
 float distance(int x, int y, int i, int j) {
     return sqrtf(powf(x - i, 2) + powf(y - j, 2));
 }
 
+// helper function used in bilateral filter 
 float gaussian(float x, double sigma) {
     return expf(-(powf(x, 2)) / (2 * powf(sigma, 2))) / (2 * M_PI * powf(sigma, 2));
 }
 
+// apply bilateral filter to src (stage 1)
+// Bilateral Filter preserves the edges while blurring.
 void applyBilateralFilter(BYTE *src, BYTE *dst, int diameter, float sigmaI, float sigmaS) {
     int half = diameter / 2;
     for (int i = PARTITION.topPixel; i <= PARTITION.bottomPixel; i++) {
@@ -482,7 +509,12 @@ void applyBilateralFilter(BYTE *src, BYTE *dst, int diameter, float sigmaI, floa
     }
 }
 
-// https://github.com/brunokeymolen/canny/blob/master/canny.cpp
+/*
+ * Detect the edge intensity and direction by calculating the gradient of the image.
+ * Apply a sobel filter to highlight the intensity change on both 
+ * horizontal and vertical directions.
+ * https://github.com/brunokeymolen/canny/blob/master/canny.cpp
+ */
 void applySobelFilter(BYTE *src, BYTE *gradient, float *direction) {
     int xFilter[3][3] = {{-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1}};
     int yFilter[3][3] = {{1, 2, 1}, {0, 0, 0}, {-1, -2, -1}};
@@ -541,7 +573,10 @@ void applySobelFilter(BYTE *src, BYTE *gradient, float *direction) {
     }
 }
 
-// https://towardsdatascience.com/canny-edge-detection-step-by-step-in-python-computer-vision-b49c3a2d8123
+/*
+ * apply non max suppression and threshold (combine stage 3 and 4 when applyThreshold is true)
+ * https://towardsdatascience.com/canny-edge-detection-step-by-step-in-python-computer-vision-b49c3a2d8123
+ */
 void applyNonMaxSuppressionAndThreshold(BYTE *src, BYTE *dst, float *direction, bool applyThreshold = true) {
     GridIterator iter(PARTITION, isOptimized ? 1 : 0, PROCID);
     if (!isOptimized) {
@@ -593,10 +628,21 @@ void applyNonMaxSuppressionAndThreshold(BYTE *src, BYTE *dst, float *direction, 
     }
 }
 
+/*
+ * apply non max suppression (stage 3)
+ * Thin the edges. Go through all points on the gradient intensity matrix and find the 
+ * pixel with maximum value in the edge direction.
+ * https://towardsdatascience.com/canny-edge-detection-step-by-step-in-python-computer-vision-b49c3a2d8123
+ */
 void applyNonMaxSuppression(BYTE *src, BYTE *dst, float *direction) {
     applyNonMaxSuppressionAndThreshold(src, dst, direction, false);
 }
 
+/*
+ * apply threshold (stage 4)
+ * Categorize strong, weak and non-relevant pixels using high and low threshold on intensity.
+ * https://towardsdatascience.com/canny-edge-detection-step-by-step-in-python-computer-vision-b49c3a2d8123
+ */
 void applyThreshold(BYTE *image) {
     const int highThreshold = 22; // 255 * 0.09f
     const int lowThreshold = 1; // highThreshold * 0.05f
@@ -616,6 +662,11 @@ void applyThreshold(BYTE *image) {
     }
 }
 
+/*
+ * apply threshold (stage 5)
+ * Transform weak pixels into strong if at least one neighbor pixel is strong.
+ * https://towardsdatascience.com/canny-edge-detection-step-by-step-in-python-computer-vision-b49c3a2d8123
+ */
 void applyHysteresis(BYTE *image) {
     GridIterator iter(PARTITION, isOptimized ? 1 : 0, PROCID);
     if (!isOptimized) {
@@ -646,10 +697,12 @@ void applyHysteresis(BYTE *image) {
     }
 }
 
+// print image info helper function
 void printImageInfo(FIBITMAP *image) {
     std::cout << "BPP: " << BPP << " Width: " << WIDTH << " Height: " << HEIGHT << " Pitch: " << PITCH << " Red mask: " << FreeImage_GetRedMask(image) << std::endl;
 }
 
+// save output image helper function
 void saveImage(const char *filepath, FIBITMAP *image, const char *stageName){
     std::string outpath;
     outpath = std::string(filepath); 
@@ -658,11 +711,13 @@ void saveImage(const char *filepath, FIBITMAP *image, const char *stageName){
     std::cout << outpath << " complete" << std::endl;
 }
 
+// save output image helper function
 void saveImage(const char *filepath, BYTE *dst, const char *stageName){
     FIBITMAP *image = FreeImage_ConvertFromRawBits(dst, WIDTH, HEIGHT, PITCH, BPP, 0, 0, 0, true);
     saveImage(filepath, image, stageName);
 }
 
+// proc 0 aggregate outputs from other processors and save the image
 void aggregateOutputAndSaveImage(const char *filepath, BYTE *dst, const char *stageName) {
     if (PROCID != 0) {
         copyBlockToBufferByte(dst);
@@ -673,9 +728,11 @@ void aggregateOutputAndSaveImage(const char *filepath, BYTE *dst, const char *st
     }
 }
 
+// the Canny Edge Detection pipeline
 void start(){
     FIBITMAP *image = NULL;
     int info[4];
+    // processor 0 opens image and convert to greyscale mage
     if (PROCID == 0) {
         int len = strlen(filepath);
         if (len < 5){
@@ -703,6 +760,7 @@ void start(){
         info[2] = HEIGHT = FreeImage_GetHeight(image);
         info[3] = PITCH = FreeImage_GetPitch(image);
     }
+    // then broadcasts the image info to everyone
     MPI_Bcast(info, 4, MPI_INT, 0, MPI_COMM_WORLD);
 
     if (PROCID != 0) {
@@ -717,6 +775,7 @@ void start(){
     PARTITIONS = new PartitionInfo[NPROC];
     setupBlockSize();
 
+    // start calculating partitions
     for (int i = 0; i < NPROC; i++) {
         PARTITIONS[i] = *getPartition(i);
         if (i == PROCID) {
@@ -728,15 +787,19 @@ void start(){
     OUTPUT_BUFFER_FLOAT = new float[BLOCK_WIDTH * BLOCK_HEIGHT];
     INPUT_BUFFER_FLOAT = new float[BLOCK_WIDTH * BLOCK_HEIGHT];
 
+    // processor 0 convert image to raw bits
     if (PROCID == 0) {
+        printImageInfo(image);
         FreeImage_ConvertToRawBits(src, image, PITCH, BPP, 0, 0, 0, true);
     }
     
     int blurDiameter = 15;
     
+    // wait for everyone to start the timer broadcast raw image to everyone
     MPI_Barrier(MPI_COMM_WORLD);
     startTime = MPI_Wtime();
     if (isOptimized) {
+        // send and receive corresponding block and its neighboring pixels according to the blur diameter
         if (PROCID == 0) {
             MPI_Request *request = new MPI_Request;
             for (int proc = 1; proc < NPROC; proc++) {
@@ -769,9 +832,11 @@ void start(){
             }
         }
     } else {
+        // broadcast the entire image to all processors if unoptimized
         MPI_Bcast(src, PITCH * HEIGHT, MPI_BYTE, 0, MPI_COMM_WORLD);
     }
     
+    // stage 1: noise reduction, can choose between bilateral filter or gaussian blur using the flag `-g`
     if(useGaussian){
         if (useGaussianTwoPass) {
             BYTE *temp = new BYTE[PITCH * HEIGHT];
@@ -792,6 +857,7 @@ void start(){
         sendBlockByte(PARTITION.neigbhors[i], TAG_OUTPUT_STEP1, isOptimized ? 1 : 0, i);
     }
 
+    // stop at stage 1 if `-s` is set to 1
     if(stage == 1){
         printf("stage 1: elapsed time for proc %d: %f\n", PROCID, MPI_Wtime() - startTime);
         if(useGaussian){
@@ -808,6 +874,7 @@ void start(){
     dst = new BYTE[PITCH * HEIGHT]();
     float *direction = new float[PITCH * HEIGHT];
 
+    // stage 2: gradient calculation
     applySobelFilter(src, dst, direction);
 
     copyBlockToBufferByte(dst, isOptimized ? 1 : 0);
@@ -820,6 +887,7 @@ void start(){
         sendBlockFloat(PARTITION.neigbhors[i], TAG_OUTPUT_STEP2_DIRECTION, isOptimized ? 1 : 0, i);   
     }
 
+    // stop at stage 2 if `-s` is set to 2
     if(stage == 2){
         printf("stage 2: elapsed time for proc %d: %f\n", PROCID, MPI_Wtime() - startTime2);
         aggregateOutputAndSaveImage(filepath, dst, "-2-sobel");
@@ -830,20 +898,24 @@ void start(){
     src = dst;
     dst = new BYTE[PITCH * HEIGHT]();
 
+    // stage 3: non-max suppression, and combine with stage 4 too if `-o` is set
     if (isOptimized) {
         applyNonMaxSuppressionAndThreshold(src, dst, direction);
     } else {
         applyNonMaxSuppression(src, dst, direction);
 
+        // stop at stage 3 if `-s` is set to 3
         if(stage == 3){
             printf("stage 3: elapsed time for proc %d: %f\n", PROCID, MPI_Wtime() - startTime3);
             aggregateOutputAndSaveImage(filepath, dst, "-3-nonmax");
             return;
         }
         double startTime4 = MPI_Wtime();
-
+        
+        // stage 4: threshold
         applyThreshold(dst);
 
+        // stop at stage 4 if `-s` is set to 4
         if(stage == 4){
             printf("stage 4: elapsed time for proc %d: %f\n", PROCID, MPI_Wtime() - startTime4);
             aggregateOutputAndSaveImage(filepath, dst, "-4-thres");
@@ -861,8 +933,10 @@ void start(){
         sendBlockByte(PARTITION.neigbhors[i], TAG_OUTPUT_STEP4, isOptimized ? 1 : 0, i);
     }
 
+    // stage 5: edge tracking
     applyHysteresis(dst);
     
+    // only calculates the stage 5 time if `-s` is set to 5
     if(stage == 5){
         printf("stage 5: elapsed time for proc %d: %f\n", PROCID, MPI_Wtime() - startTime5);
         aggregateOutputAndSaveImage(filepath, dst, "-5-hyster");
@@ -875,7 +949,7 @@ void start(){
     } else {
         recvBlocksByte(dst, NPROC - 1, TAG_OUTPUT_FINAL);
     }
-    printf("stage 5: elapsed time for proc %d: %f\n", PROCID, MPI_Wtime() - startTime);
+    printf("Overall: elapsed time for proc %d: %f\n", PROCID, MPI_Wtime() - startTime);
 
     if (PROCID == 0) {
         saveImage(filepath, dst, "-5-hyster");

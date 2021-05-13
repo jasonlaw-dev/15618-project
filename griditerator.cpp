@@ -3,6 +3,9 @@
 #include <iostream>
 #include <stdio.h>
 
+// this initializes the iterator with variables inner region. Inner region refers to the region that does not require communication
+// size of inner region is determined by borderWidth, which is the width of the border of region that requires communication
+// if border width is 0, it iterates top to bottom, left to right.
 GridIterator::GridIterator(PartitionInfo partition, int borderWidth, int PROCID): partition(partition), borderWidth(borderWidth), innerFinished(false), PROCID(PROCID), communicate(false) {
     innerTopPixel = std::min(partition.topPixel + borderWidth, partition.bottomPixel);
     if (partition.neigbhors[1] == -1) {
@@ -20,7 +23,6 @@ GridIterator::GridIterator(PartitionInfo partition, int borderWidth, int PROCID)
     if (partition.neigbhors[5] == -1) {
         innerRightPixel = partition.rightPixel;
     }
-    // std::cout << "top: " <<  innerTopPixel << " bottom: "<< innerBottomPixel << " left: " << innerLeftPixel << " right: " << innerRightPixel << std::endl;
     i = innerTopPixel;
     j = innerLeftPixel;
 }
@@ -31,16 +33,19 @@ std::pair<int, int> GridIterator::next() {
         return ret;
     }
     if ((i == innerBottomPixel && j == innerRightPixel) || innerFinished) {
+        // this is the outer region
         if (innerFinished) {
             j++;
             communicate = false;
         } else {
+            // when last pixel of the inner region has reached, we then start from top left of the outer region
             i = partition.topPixel;
             j = partition.leftPixel;
             innerFinished = true;
             communicate = partition.neighborCount > 0;
         }
         bool done = false;
+        // this for loop searches for the next valid outer region cell
         for (; i <= partition.bottomPixel; i++) {
             for (; j <= partition.rightPixel; j++) {
                 if (i >= innerTopPixel && i <= innerBottomPixel && j >= innerLeftPixel && j <= innerRightPixel) {
@@ -59,6 +64,7 @@ std::pair<int, int> GridIterator::next() {
             i = -1;
         }
     } else {
+        // this is the inner region
         j++;
         if (j > innerRightPixel) {
             i++;
