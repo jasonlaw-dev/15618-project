@@ -32,8 +32,10 @@ Note that this is only tested on the GHC machines.
   # example: mpirun -np 8 ./main -f images/wallpaper.jpg
   # this runs the bilateral filter pipeline with 8 cores on wallpaper.jpg
   ```
-  Flags supported:
+  Required Flag:
    - `-f <image>` Specify the image file to be generated
+  
+  Optional Flags:
    - `-s <stage>` Specify running the pipeline up to a specific stage, accepts 1-5. This only prints the runtime for that particular stage. When not specified, it will run to the end and print the overall runtime.
    - `-g` Change the blur algorithm from bilateral filter to Gaussian blur
    - `-t` Set the Gaussian blur to two-pass, only works when `-g` is used
