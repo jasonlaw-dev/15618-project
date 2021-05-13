@@ -868,8 +868,18 @@ void start(){
         aggregateOutputAndSaveImage(filepath, dst, "-5-hyster");
         return;
     }
+
+    if (PROCID != 0) {
+        copyBlockToBufferByte(dst);
+        sendBlockByte(0, TAG_OUTPUT_FINAL);
+    } else {
+        recvBlocksByte(dst, NPROC - 1, TAG_OUTPUT_FINAL);
+    }
     printf("stage 5: elapsed time for proc %d: %f\n", PROCID, MPI_Wtime() - startTime);
-    aggregateOutputAndSaveImage(filepath, dst, "-5-hyster");
+
+    if (PROCID == 0) {
+        saveImage(filepath, dst, "-5-hyster");
+    }
 }
 
 int main(int argc, char* argv[]) {
